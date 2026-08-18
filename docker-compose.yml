@@ -1,6 +1,27 @@
 ---
 services:
+  elastic-agent:
+    profiles: ["agent"]
+    image: docker.elastic.co/elastic-agent/elastic-agent:${ELASTIC_STACK_VERSION}
+    container_name: elastic-agent
+    restart: unless-stopped
+    user: root
+    # Default image entrypoint runs `elastic-agent container` (Fleet). Override
+    # so this service runs standalone from the mounted policy file.
+    entrypoint: ["/usr/bin/tini", "--", "/usr/share/elastic-agent/elastic-agent"]
+    command: ["run", "-e"]
+    volumes:
+      - ${DOCKER_HOME}/elastic-agent/elastic-agent.yml:/usr/share/elastic-agent/elastic-agent.yml:ro
+      - elastic_agent_state:/usr/share/elastic-agent/state
+    environment:
+      ES_ENDPOINT: ${ES_ENDPOINT}
+      ES_API_KEY_ID: ${ES_API_KEY_ID}
+      ES_API_KEY: ${ES_API_KEY}
+      OPENSKY_API_CLIENT_ID: ${OPENSKY_API_CLIENT_ID}
+      OPENSKY_API_CLIENT_SECRET: ${OPENSKY_API_CLIENT_SECRET}
+
   logstash:
+    profiles: ["logstash"]
     build:
       context: ./logstash
       args:
@@ -31,6 +52,6 @@ services:
       OPENSKY_API_CLIENT_ID: ${OPENSKY_API_CLIENT_ID}
       OPENSKY_API_CLIENT_SECRET: ${OPENSKY_API_CLIENT_SECRET}
 
-
 volumes:
+  elastic_agent_state:
   logstash_data:

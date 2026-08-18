@@ -1,6 +1,6 @@
 # ADS-B Flight Tracking with the Elastic Stack
 
-Live aircraft position tracking powered by [OpenSky Network](https://opensky-network.org) and the Elastic Stack. Logstash pipelines poll the OpenSky REST API for real-time ADS-B transponder data, enrich each position with country/region geo-shapes, and index everything into an Elasticsearch data stream for visualisation in Kibana.
+Live aircraft position tracking powered by [OpenSky Network](https://opensky-network.org) and the Elastic Stack. A standalone Elastic Agent polls the OpenSky REST API for real-time ADS-B transponder data (Logstash remains available as a fallback), enriches each position with country/region geo-shapes, and indexes everything into an Elasticsearch data stream for visualisation in Kibana.
 
 > **Data source** - All flight data is provided by [The OpenSky Network](https://opensky-network.org), a community-based receiver network that collects air traffic surveillance data and makes it freely available for research and non-commercial purposes. No data is bundled in this repository; it is fetched live from the OpenSky API at runtime.
 >
@@ -13,16 +13,16 @@ Live aircraft position tracking powered by [OpenSky Network](https://opensky-net
 ```mermaid
 flowchart LR
     OSN["OpenSky Network API"]
-    LS["Logstash"]
+    EA["Elastic Agent (CEL)"]
     ES["Elasticsearch"]
     KB["Kibana"]
     AB["AI Agents"]
     WF["Workflow"]
     SL["Slack"]
 
-    OSN -->|"HTTP poll every 6 min"| LS
-    LS -->|"enrich + index"| ES
-    ES -->|"visualise"| KB
+    OSN -->|"HTTP poll every 6 min"| EA
+    EA -->|"index"| ES
+    ES -->|"enrich + visualise"| KB
     AB -->|"query"| ES
     KB -->|"query"| ES
     KB -->|"Agent Builder"| AB
@@ -31,7 +31,7 @@ flowchart LR
     AB -.->|"trigger"| WF
 ```
 
-Each pipeline covers one quadrant of the globe. Splitting the world into four smaller queries is more efficient than a single global request.
+Each input covers one quadrant of the globe. Splitting the world into four smaller queries is more efficient than a single global request.
 
 | Pipeline  | Coverage                    | Bounding box                |
 | --------- | --------------------------- | --------------------------- |
@@ -44,33 +44,29 @@ All four pipelines write to the same `demos-aircraft-adsb` data stream. An inges
 
 ### Pipeline Design — Polling with OAuth2
 
-The OpenSky API requires an OAuth2 bearer token (client-credentials grant via Keycloak). Logstash's `http_poller` input plugin can poll a URL on a schedule but only supports basic auth and static headers — it cannot perform an OAuth2 token exchange before each request, so it won't work here.
-
-The pipelines work around this by chaining a `heartbeat` input with two `http` filter plugins:
+The OpenSky API requires an OAuth2 bearer token (client-credentials grant via Keycloak). The default ingest path is a **standalone Elastic Agent** using the [CEL input](https://www.elastic.co/docs/reference/beats/filebeat/filebeat-input-cel), which has native OAuth2 support and maps each state vector into a document.
 
 ```mermaid
 sequenceDiagram
-    participant HB as heartbeat (360s)
-    participant TK as http filter (token)
+    participant CEL as Elastic Agent CEL (6m)
     participant KC as Keycloak (OpenSky)
-    participant API as http filter (API call)
     participant OSN as OpenSky REST API
-    participant OUT as split / mutate / date → ES
+    participant ES as Elasticsearch
 
-    HB->>TK: synthetic event
-    TK->>KC: POST /token (client_credentials)
-    KC-->>TK: access_token → [@metadata]
-    TK->>API: event with token
-    API->>OSN: GET /states/all + Bearer token
-    OSN-->>API: ADS-B state vectors
-    API->>OUT: transform → index
+    CEL->>KC: OAuth2 client_credentials (managed by auth.oauth2)
+    KC-->>CEL: access_token
+    CEL->>OSN: GET /states/all + Bearer token
+    OSN-->>CEL: ADS-B state vectors
+    CEL->>ES: one document per aircraft → demos-aircraft-adsb
 ```
 
-1. **`heartbeat` input** — generates a synthetic event every 360 seconds, acting as the poll timer.
-2. **`http` filter (token)** — performs an OAuth2 client-credentials grant against the OpenSky Keycloak endpoint. The access token is stored in `[@metadata]` so it is ephemeral and never indexed.
-3. **`http` filter (API)** — calls the OpenSky `/states/all` endpoint with the bearer token from step 2 interpolated into the `Authorization` header. The bounding-box query parameters differ per quadrant.
+1. **`auth.oauth2`** — Agent obtains and refreshes a client-credentials token from the OpenSky Keycloak endpoint. The token never appears in indexed documents.
+2. **CEL program** — `GET /states/all` for that quadrant, filters empty/null ICAO24 values, maps the 17-element arrays into named fields, and sets `@timestamp` from `time_position` (falling back to `last_contact`).
+3. **Elasticsearch output** — writes to the existing `demos-aircraft-adsb` data stream. The stream's default ingest pipeline still enriches country/region and nearest airport.
 
-If either HTTP call fails, the event is tagged `_httprequestfailure` and dropped before reaching the output. This pattern is reusable for any Logstash pipeline that needs to poll an OAuth2-protected REST API on a schedule.
+Four CEL inputs (`adsb-q1`–`adsb-q4`) run in one Agent process, one per bounding box. A failed HTTP call yields an empty event batch for that interval rather than blocking the other quadrants.
+
+**Logstash fallback** — set `INGEST_ENGINE=logstash` in `.env` (or `make up INGEST_ENGINE=logstash`). The Logstash pipelines remain in `logstash/pipeline/` and use the older heartbeat → OAuth2 `http` filter → API `http` filter chain, because Logstash `http_poller` cannot perform an OAuth2 token exchange. Do not run both engines at once against the same cluster; they would double-index.
 
 ### AI Agent
 
@@ -189,7 +185,7 @@ ES_API_KEY=ui2lp2axTNmsyakw9tvNnw
 ES_API_KEY_ENCODED=VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==
 ```
 
-`setup.sh` uses the base64-encoded key for REST calls; Logstash uses the `id:key` pair directly.
+`setup.sh` uses the base64-encoded key for REST calls; Elastic Agent and Logstash use the `id:key` pair directly.
 
 ## Quick Start
 
@@ -208,6 +204,8 @@ cp .env.example .env
 Edit `.env` and fill in your credentials:
 
 ```sh
+INGEST_ENGINE=agent        # agent (default) or logstash
+
 ES_ENDPOINT=https://my-deployment.es.us-central1.gcp.cloud.es.io
 ES_API_KEY_ID=VuaCfGcBCdbkQm-e5aOx
 ES_API_KEY=ui2lp2axTNmsyakw9tvNnw
@@ -261,31 +259,34 @@ Demo users are also created automatically as part of `make setup`. Use `--no-ser
 ### 4. Run
 
 ```bash
-make up           # or: docker compose up -d
+make up           # Elastic Agent (default)
+# make up INGEST_ENGINE=logstash   # legacy Logstash pipelines
 ```
 
-All four quadrant pipelines start automatically. Each polls OpenSky every 6 minutes and writes to the `demos-aircraft-adsb` data stream.
+All four quadrant inputs start automatically. Each polls OpenSky every 6 minutes and writes to the `demos-aircraft-adsb` data stream.
+
+To switch engines, stop the current one first (`make down`) so you do not double-index.
 
 ### 5. Verify
 
 Check logs:
 
 ```bash
-make logs         # or: docker compose logs -f logstash
+make logs         # or: docker compose logs -f
 ```
 
-Confirm all pipelines are running:
+Confirm ingest is running:
 
 ```bash
-make status       # or: docker compose exec logstash curl -s localhost:9600/_node/pipelines?pretty
+make status
 ```
 
-You should see `adsb-q1` through `adsb-q4` in the response.
+For Elastic Agent you should see the `adsb-q1`–`adsb-q4` CEL units. For Logstash you should see pipelines `adsb-q1` through `adsb-q4`.
 
 ## Stopping
 
 ```bash
-make down         # or: docker compose down
+make down
 ```
 
 ## Make Targets
@@ -316,16 +317,18 @@ make deploy-agents FORCE=1
 make setup FORCE=1
 ```
 
-### Logstash
+### Ingest
 
-| Command        | Description                           |
-| -------------- | ------------------------------------- |
-| `make up`      | Start Logstash                        |
-| `make down`    | Stop Logstash                         |
-| `make logs`    | Tail Logstash logs                    |
-| `make restart` | Restart Logstash after config changes |
-| `make status`  | Show Logstash pipeline status         |
-| `make clean`   | Stop Logstash and remove volumes      |
+Default engine is Elastic Agent (`INGEST_ENGINE=agent`). Set `INGEST_ENGINE=logstash` in `.env` or on the make command to use the legacy Logstash pipelines.
+
+| Command        | Description                                              |
+| -------------- | -------------------------------------------------------- |
+| `make up`      | Start ingest (Agent by default)                          |
+| `make down`    | Stop ingest (both Agent and Logstash profiles)           |
+| `make logs`    | Tail ingest logs                                         |
+| `make restart` | Restart running ingest containers after config changes   |
+| `make status`  | Show ingest status                                       |
+| `make clean`   | Stop ingest and remove volumes                           |
 
 ### Diagnostics
 
@@ -334,7 +337,7 @@ make setup FORCE=1
 | `make validate` | Validate Docker Compose config             |
 | `make health`   | Check Elasticsearch cluster health         |
 | `make ps`       | Show running containers                    |
-| `make shell`    | Open a shell inside the Logstash container |
+| `make shell`    | Open a shell inside the running ingest container |
 
 ## Project Structure
 
@@ -375,7 +378,9 @@ make setup FORCE=1
 │       ├── hijack-cases-summary.yaml                 # Workflow: hijack cases summary (agent tool)
 │       ├── adsb-aircraft-history.yaml                # Workflow: aircraft history report (agent tool)
 │       └── adsb-defunct-callsign-detector.yaml        # Workflow: defunct callsign detection (ES|QL LOOKUP JOIN)
-└── logstash/
+├── elastic-agent/
+│   └── elastic-agent.yml                             # Standalone Agent policy (CEL + OAuth2, default ingest)
+└── logstash/                                         # Fallback ingest (INGEST_ENGINE=logstash)
     ├── config/
     │   ├── logstash.yml                              # Logstash node settings
     │   └── pipelines.yml                             # Registers all 4 quadrant pipelines
@@ -386,9 +391,9 @@ make setup FORCE=1
         └── adsb_q4.conf                              # Q4 - South-East
 ```
 
-## Optional: Centralised Pipeline Management
+## Optional: Centralised Pipeline Management (Logstash only)
 
-Instead of managing pipeline `.conf` files on disk, you can use Kibana's [Centralised Pipeline Management](https://www.elastic.co/docs/reference/logstash/configuring-centralized-pipelines) (CPM) to create, edit, and delete pipelines from the UI. Pipelines are stored in Elasticsearch and pulled by Logstash automatically.
+Applies only when `INGEST_ENGINE=logstash`. Instead of managing pipeline `.conf` files on disk, you can use Kibana's [Centralised Pipeline Management](https://www.elastic.co/docs/reference/logstash/configuring-centralized-pipelines) (CPM) to create, edit, and delete pipelines from the UI. Pipelines are stored in Elasticsearch and pulled by Logstash automatically.
 
 This repo ships with a toggle — set one environment variable and Logstash switches from local file mode to centralised mode.
 
@@ -413,7 +418,9 @@ make restart      # or: docker compose restart logstash
 
 ## Changing Log Level at Runtime
 
-The Logstash node API (port 9600) is protected by the `LS_API_USER` / `LS_API_PW` credentials you set in `.env` (defaults: `logstash` / `changeme`).
+**Elastic Agent (default)** — set `agent.logging.level` in `elastic-agent/elastic-agent.yml` (for example `debug`) and `make restart`.
+
+**Logstash** — the node API (port 9600) is protected by the `LS_API_USER` / `LS_API_PW` credentials you set in `.env` (defaults: `logstash` / `changeme`).
 
 ```bash
 curl -XPUT -u "${LS_API_USER}:${LS_API_PW}" \

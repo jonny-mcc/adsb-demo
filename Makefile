@@ -1,5 +1,14 @@
 FORCE_FLAG := $(if $(FORCE),--force,)
 
+# Ingest engine: agent (default) or logstash. Command-line wins, then .env, then agent.
+ifndef INGEST_ENGINE
+  INGEST_ENGINE := $(shell grep -E '^INGEST_ENGINE=' .env 2>/dev/null | tail -1 | cut -d= -f2)
+endif
+ifeq ($(strip $(INGEST_ENGINE)),)
+  INGEST_ENGINE := agent
+endif
+export COMPOSE_PROFILES := $(INGEST_ENGINE)
+
 .PHONY: setup setup-no-service-user deploy-ilm deploy-indices deploy-enrich deploy-pipelines deploy-kibana \
         deploy-cases deploy-workflows deploy-tools deploy-skills deploy-agents deploy-demouser \
         deploy-es deploy-ai redeploy \
@@ -59,26 +68,35 @@ redeploy:           ## Re-deploy all resources (force overwrite)
 	./setup.sh --force
 
 # ---------------------------------------------------------------------------
-##@ Logstash
+##@ Ingest
 # ---------------------------------------------------------------------------
 
-up:                 ## Start Logstash
+up:                 ## Start ingest (Elastic Agent by default; INGEST_ENGINE=logstash for Logstash)
 	docker compose up -d
 
-down:               ## Stop Logstash
-	docker compose down
+down:               ## Stop ingest (both agent and logstash profiles)
+	docker compose --profile agent --profile logstash down
 
-logs:               ## Tail Logstash logs
-	docker compose logs -f logstash
+logs:               ## Tail ingest logs
+	docker compose logs -f
 
-restart:            ## Restart Logstash after config changes
-	docker compose restart logstash
+restart:            ## Restart running ingest containers after config changes
+	docker compose restart
 
-status:             ## Show Logstash pipeline status
-	docker compose exec logstash curl -s localhost:9600/_node/pipelines?pretty
+status:             ## Show ingest status
+	@echo "INGEST_ENGINE=$(INGEST_ENGINE) COMPOSE_PROFILES=$(COMPOSE_PROFILES)"
+	@docker compose --profile agent --profile logstash ps
+	@if docker compose --profile agent ps --status running --services 2>/dev/null | grep -qx elastic-agent; then \
+	  echo "--- Elastic Agent ---"; \
+	  docker compose exec -T elastic-agent elastic-agent status || true; \
+	fi
+	@if docker compose --profile logstash ps --status running --services 2>/dev/null | grep -qx logstash; then \
+	  echo "--- Logstash pipelines ---"; \
+	  docker compose exec -T logstash curl -s localhost:9600/_node/pipelines?pretty || true; \
+	fi
 
-clean:              ## Stop Logstash and remove volumes
-	docker compose down -v
+clean:              ## Stop ingest and remove volumes (both profiles)
+	docker compose --profile agent --profile logstash down -v
 
 # ---------------------------------------------------------------------------
 ##@ Diagnostics
@@ -92,11 +110,18 @@ health:             ## Check Elasticsearch cluster health
 	curl -s "$${ES_ENDPOINT%/}/_cluster/health?pretty" \
 	  -H "Authorization: ApiKey $${ES_API_KEY_ENCODED}"
 
-ps:                 ## Show running containers
-	docker compose ps
+ps:                 ## Show running containers (both ingest profiles)
+	docker compose --profile agent --profile logstash ps
 
-shell:              ## Open a shell inside the Logstash container
-	docker compose exec logstash bash
+shell:              ## Open a shell inside the running ingest container
+	@if docker compose --profile agent ps --status running --services 2>/dev/null | grep -qx elastic-agent; then \
+	  docker compose exec elastic-agent bash; \
+	elif docker compose --profile logstash ps --status running --services 2>/dev/null | grep -qx logstash; then \
+	  docker compose exec logstash bash; \
+	else \
+	  echo "No ingest container is running. Start one with: make up"; \
+	  exit 1; \
+	fi
 
 # ---------------------------------------------------------------------------
 ##@ Help
