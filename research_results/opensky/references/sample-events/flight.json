@@ -1,0 +1,38 @@
+{
+  "flights_all": [
+    {
+      "icao24": "3c675a",
+      "firstSeen": 1517227200,
+      "estDepartureAirport": "EDDF",
+      "lastSeen": 1517230800,
+      "estArrivalAirport": "EGLL",
+      "callsign": "DLH456  ",
+      "estDepartureAirportHorizDistance": 1250,
+      "estDepartureAirportVertDistance": 40,
+      "estArrivalAirportHorizDistance": 980,
+      "estArrivalAirportVertDistance": 30,
+      "departureAirportCandidatesCount": 1,
+      "arrivalAirportCandidatesCount": 2
+    }
+  ],
+  "flights_arrival": [
+    {
+      "icao24": "3c675a",
+      "firstSeen": 1517220000,
+      "estDepartureAirport": "LFPG",
+      "lastSeen": 1517227200,
+      "estArrivalAirport": "EDDF",
+      "callsign": "DLH456  ",
+      "estDepartureAirportHorizDistance": 1500,
+      "estDepartureAirportVertDistance": 50,
+      "estArrivalAirportHorizDistance": 400,
+      "estArrivalAirportVertDistance": 20,
+      "departureAirportCandidatesCount": 0,
+      "arrivalAirportCandidatesCount": 1
+    }
+  ],
+  "empty_interval": {
+    "http_status": 404,
+    "body": ""
+  }
+}

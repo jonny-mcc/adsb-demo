@@ -1,0 +1,27 @@
+{
+  "raw_response": {
+    "icao24": "3c4b26",
+    "startTime": 1517227200,
+    "endTime": 1517230800,
+    "calllsign": "DLH789  ",
+    "path": [
+      [1517227200, 50.0379, 8.5622, 120.0, 80.0, true],
+      [1517228100, 50.5, 8.2, 8500.0, 275.0, false],
+      [1517230800, 51.47, -0.4543, 80.0, 270.0, true]
+    ]
+  },
+  "decoded_waypoints": [
+    {
+      "icao24": "3c4b26",
+      "startTime": 1517227200,
+      "endTime": 1517230800,
+      "calllsign": "DLH789  ",
+      "time": 1517227200,
+      "latitude": 50.0379,
+      "longitude": 8.5622,
+      "baro_altitude": 120.0,
+      "true_track": 80.0,
+      "on_ground": true
+    }
+  ]
+}
