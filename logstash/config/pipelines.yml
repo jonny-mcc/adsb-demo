@@ -1,3 +1,5 @@
+# Fallback ingest — used when INGEST_ENGINE=logstash.
+# The default ingest path is standalone Elastic Agent (elastic-agent/elastic-agent.yml).
 - pipeline.id: adsb-q1
   path.config: "/usr/share/logstash/pipeline/adsb_q1.conf"
   pipeline.workers: ${LS_PIPELINE_WORKERS}

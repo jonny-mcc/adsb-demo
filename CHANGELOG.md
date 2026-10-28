@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Default ingest is standalone Elastic Agent** — four CEL inputs poll OpenSky with native OAuth2 client-credentials auth and write to `demos-aircraft-adsb`. Logstash remains available behind `INGEST_ENGINE=logstash`.
+
 ## [1.11.5] - 2026-06-30
 
 ### Changed

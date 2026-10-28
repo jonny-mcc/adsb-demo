@@ -8,7 +8,7 @@ ______________________________________________________________________
 ## Tech Stack & Commands
 
 - **Runtime**: Docker & Docker Compose
-- **Data pipeline**: Logstash 9.x (four quadrant pipelines polling the OpenSky Network API)
+- **Data pipeline**: Elastic Agent 9.x (CEL inputs polling the OpenSky Network API; Logstash is an optional fallback)
 - **Search & storage**: Elasticsearch (time-series data stream with geo-shape enrichment)
 - **Visualisation**: Kibana (dashboards, data views)
 - **Setup automation**: Bash (`setup.sh`)
@@ -32,16 +32,16 @@ ______________________________________________________________________
 | `make deploy-es`             | Deploy all ES resources (ilm + indices + enrich + pipelines)             |
 | `make deploy-ai`             | Deploy AI layer (workflows + tools + skills + agents)                    |
 | `make redeploy`              | Re-deploy all resources (force overwrite)                                |
-| `make up`                    | Start Logstash (all 4 pipelines)                                         |
-| `make down`                  | Stop Logstash                                                            |
-| `make logs`                  | Tail Logstash logs                                                       |
-| `make restart`               | Restart Logstash after config changes                                    |
-| `make status`                | Show Logstash pipeline status                                            |
-| `make clean`                 | Stop Logstash and remove volumes                                         |
+| `make up`                    | Start ingest (Elastic Agent by default; `INGEST_ENGINE=logstash` for Logstash) |
+| `make down`                  | Stop ingest (both Agent and Logstash profiles)                           |
+| `make logs`                  | Tail ingest logs                                                         |
+| `make restart`               | Restart running ingest containers after config changes                   |
+| `make status`                | Show ingest status                                                       |
+| `make clean`                 | Stop ingest and remove volumes                                           |
 | `make validate`              | Validate Docker Compose config                                           |
 | `make health`                | Check Elasticsearch cluster health                                       |
 | `make ps`                    | Show running containers                                                  |
-| `make shell`                 | Open a shell inside the Logstash container                               |
+| `make shell`                 | Open a shell inside the running ingest container                         |
 | `make help`                  | List all available targets (grouped)                                     |
 
 Any deploy target accepts `FORCE=1` to overwrite existing resources, e.g. `make deploy-agents FORCE=1`.
@@ -51,14 +51,15 @@ ______________________________________________________________________
 ## Key Conventions
 
 - Never edit `.env` directly in commits; only reference `.env.example`.
-- Logstash pipeline configs live in `logstash/pipeline/`; Elasticsearch resources in `elasticsearch/`.
-- The four pipelines (`adsb_q1`–`adsb_q4`) are intentionally separate to spread load across quadrants.
+- Elastic Agent policy lives in `elastic-agent/elastic-agent.yml`; Logstash pipeline configs live in `logstash/pipeline/`; Elasticsearch resources in `elasticsearch/`.
+- The four quadrant inputs (`adsb-q1`–`adsb-q4`) are intentionally separate to spread load across bounding boxes.
 
 ______________________________________________________________________
 
 ## Docker Access
 
-This project relies on Docker for its Logstash service. AI assistants
+This project relies on Docker for its ingest services (Elastic Agent by default,
+Logstash as a fallback). AI assistants
 running in sandboxed environments (e.g. Cursor) often cannot reach the Docker
 daemon under default sandbox restrictions.
 
@@ -85,7 +86,7 @@ After code changes:
 
 1. Verify Docker Compose config parses: `docker compose config --quiet`
    (request `required_permissions: ["all"]`; see [Docker Access](#docker-access)).
-2. If Logstash configs changed, `make validate` then `make restart`.
+2. If ingest configs changed, `make validate` then `make restart`.
 3. Summarise edits, mention tests, and flag follow-up work in the final response.
 
 ______________________________________________________________________

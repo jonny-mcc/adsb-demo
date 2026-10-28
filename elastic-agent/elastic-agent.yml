@@ -1,0 +1,166 @@
+# Standalone Elastic Agent policy — OpenSky ADS-B ingest
+#
+# Polls the OpenSky Network /states/all API every 6 minutes for each global
+# quadrant. Native OAuth2 client-credentials auth replaces the Logstash
+# heartbeat + dual http-filter workaround.
+#
+# Documents are written to the existing demos-aircraft-adsb time-series data
+# stream. Country/airport enrichment still happens in the Elasticsearch ingest
+# pipeline (demo-aircraft-adsb.opensky) attached to that stream.
+#
+# Variable substitution uses the Elastic Agent env provider (${env.NAME}),
+# populated from the container environment (see docker-compose.yml).
+
+agent.logging.to_stderr: true
+agent.logging.level: info
+
+# Do not ship agent logs/metrics into the demo cluster.
+agent.monitoring:
+  enabled: true
+  logs: false
+  metrics: false
+  http:
+    enabled: true
+    host: localhost
+    port: 6791
+
+agent.providers.initial_default: false
+
+outputs:
+  default:
+    type: elasticsearch
+    hosts:
+      - "${env.ES_ENDPOINT}"
+    api_key: "${env.ES_API_KEY_ID}:${env.ES_API_KEY}"
+    preset: balanced
+
+inputs:
+  - id: adsb-q1
+    type: cel
+    use_output: default
+    data_stream.namespace: adsb
+    streams:
+      - id: adsb-q1-states
+        data_stream.dataset: aircraft
+        index: "demos-aircraft-adsb"
+        interval: 6m
+        keep_null: false
+        publisher_pipeline.disable_host: true
+        resource.url: "https://opensky-network.org/api/states/all?lamin=0&lomin=-180&lamax=90&lomax=0"
+        resource.timeout: 90s
+        resource.max_body_size: 52428800
+        resource.retry.max_attempts: 3
+        resource.retry.wait_min: 2s
+        resource.retry.wait_max: 15s
+        auth.oauth2: &opensky_oauth2
+          client.id: "${env.OPENSKY_API_CLIENT_ID}"
+          client.secret: "${env.OPENSKY_API_CLIENT_SECRET}"
+          token_url: "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+        processors: &opensky_processors
+          - drop_fields:
+              fields:
+                - agent
+                - elastic_agent
+                - ecs
+                - host
+                - input
+                - log
+                - event
+              ignore_missing: true
+        program: &opensky_cel |
+          get(state.url).as(resp,
+            resp.StatusCode == 200 && size(resp.Body) > 0 ?
+              resp.Body.decode_json().as(body, {
+                "events": has(body.states) && body.states != null ?
+                  body.states.filter(s,
+                    s.size() > 4 && s[0] != null && string(s[0]) != "" && (s[3] != null || s[4] != null)
+                  ).map(s, {
+                    "icao24": s[0],
+                    "callsign": s.size() > 1 ? s[1] : null,
+                    "origin_country": s.size() > 2 ? s[2] : null,
+                    "time_position": s.size() > 3 ? s[3] : null,
+                    "last_contact": s.size() > 4 ? s[4] : null,
+                    "longitude": s.size() > 5 ? s[5] : null,
+                    "latitude": s.size() > 6 ? s[6] : null,
+                    "baro_altitude": s.size() > 7 ? s[7] : null,
+                    "on_ground": s.size() > 8 ? s[8] : null,
+                    "velocity": s.size() > 9 ? s[9] : null,
+                    "true_track": s.size() > 10 ? s[10] : null,
+                    "vertical_rate": s.size() > 11 ? s[11] : null,
+                    "sensors": s.size() > 12 ? s[12] : null,
+                    "geo_altitude": s.size() > 13 ? s[13] : null,
+                    "squawk": s.size() > 14 ? s[14] : null,
+                    "spi": s.size() > 15 ? s[15] : null,
+                    "position_source": s.size() > 16 ? s[16] : null,
+                    "location": s.size() > 6 && s[5] != null && s[6] != null ?
+                      {"lon": s[5], "lat": s[6]} : null,
+                    "@timestamp": int((s[3] != null ? s[3] : s[4]) * 1000)
+                  })
+                : []
+              })
+            :
+              {"events": []}
+          )
+
+  - id: adsb-q2
+    type: cel
+    use_output: default
+    data_stream.namespace: adsb
+    streams:
+      - id: adsb-q2-states
+        data_stream.dataset: aircraft
+        index: "demos-aircraft-adsb"
+        interval: 6m
+        keep_null: false
+        publisher_pipeline.disable_host: true
+        resource.url: "https://opensky-network.org/api/states/all?lamin=0&lomin=0&lamax=90&lomax=180"
+        resource.timeout: 90s
+        resource.max_body_size: 52428800
+        resource.retry.max_attempts: 3
+        resource.retry.wait_min: 2s
+        resource.retry.wait_max: 15s
+        auth.oauth2: *opensky_oauth2
+        processors: *opensky_processors
+        program: *opensky_cel
+
+  - id: adsb-q3
+    type: cel
+    use_output: default
+    data_stream.namespace: adsb
+    streams:
+      - id: adsb-q3-states
+        data_stream.dataset: aircraft
+        index: "demos-aircraft-adsb"
+        interval: 6m
+        keep_null: false
+        publisher_pipeline.disable_host: true
+        resource.url: "https://opensky-network.org/api/states/all?lamin=-90&lomin=-180&lamax=0&lomax=0"
+        resource.timeout: 90s
+        resource.max_body_size: 52428800
+        resource.retry.max_attempts: 3
+        resource.retry.wait_min: 2s
+        resource.retry.wait_max: 15s
+        auth.oauth2: *opensky_oauth2
+        processors: *opensky_processors
+        program: *opensky_cel
+
+  - id: adsb-q4
+    type: cel
+    use_output: default
+    data_stream.namespace: adsb
+    streams:
+      - id: adsb-q4-states
+        data_stream.dataset: aircraft
+        index: "demos-aircraft-adsb"
+        interval: 6m
+        keep_null: false
+        publisher_pipeline.disable_host: true
+        resource.url: "https://opensky-network.org/api/states/all?lamin=-90&lomin=0&lamax=0&lomax=180"
+        resource.timeout: 90s
+        resource.max_body_size: 52428800
+        resource.retry.max_attempts: 3
+        resource.retry.wait_min: 2s
+        resource.retry.wait_max: 15s
+        auth.oauth2: *opensky_oauth2
+        processors: *opensky_processors
+        program: *opensky_cel
