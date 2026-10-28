@@ -66,7 +66,7 @@ sequenceDiagram
 
 Four CEL inputs (`adsb-q1`–`adsb-q4`) run in one Agent process, one per bounding box. A failed HTTP call yields an empty event batch for that interval rather than blocking the other quadrants.
 
-**Logstash fallback** — set `INGEST_ENGINE=logstash` in `.env` (or `make up INGEST_ENGINE=logstash`). The Logstash pipelines remain in `logstash/pipeline/` and use the older heartbeat → OAuth2 `http` filter → API `http` filter chain, because Logstash `http_poller` cannot perform an OAuth2 token exchange. Do not run both engines at once against the same cluster; they would double-index.
+**Logstash fallback** — set `COMPOSE_PROFILES=logstash` in `.env` (or `make up INGEST_ENGINE=logstash`). The Logstash pipelines remain in `logstash/pipeline/` and use the older heartbeat → OAuth2 `http` filter → API `http` filter chain, because Logstash `http_poller` cannot perform an OAuth2 token exchange. Do not run both engines at once against the same cluster; they would double-index.
 
 ### AI Agent
 
@@ -204,7 +204,7 @@ cp .env.example .env
 Edit `.env` and fill in your credentials:
 
 ```sh
-INGEST_ENGINE=agent        # agent (default) or logstash
+COMPOSE_PROFILES=agent     # agent (default) or logstash
 
 ES_ENDPOINT=https://my-deployment.es.us-central1.gcp.cloud.es.io
 ES_API_KEY_ID=VuaCfGcBCdbkQm-e5aOx
@@ -319,7 +319,7 @@ make setup FORCE=1
 
 ### Ingest
 
-Default engine is Elastic Agent (`INGEST_ENGINE=agent`). Set `INGEST_ENGINE=logstash` in `.env` or on the make command to use the legacy Logstash pipelines.
+Default engine is Elastic Agent (`COMPOSE_PROFILES=agent`). Set `COMPOSE_PROFILES=logstash` in `.env` (or `make up INGEST_ENGINE=logstash`) to use the legacy Logstash pipelines.
 
 | Command        | Description                                              |
 | -------------- | -------------------------------------------------------- |
@@ -380,7 +380,7 @@ Default engine is Elastic Agent (`INGEST_ENGINE=agent`). Set `INGEST_ENGINE=logs
 │       └── adsb-defunct-callsign-detector.yaml        # Workflow: defunct callsign detection (ES|QL LOOKUP JOIN)
 ├── elastic-agent/
 │   └── elastic-agent.yml                             # Standalone Agent policy (CEL + OAuth2, default ingest)
-└── logstash/                                         # Fallback ingest (INGEST_ENGINE=logstash)
+└── logstash/                                         # Fallback ingest (COMPOSE_PROFILES=logstash)
     ├── config/
     │   ├── logstash.yml                              # Logstash node settings
     │   └── pipelines.yml                             # Registers all 4 quadrant pipelines
@@ -393,7 +393,7 @@ Default engine is Elastic Agent (`INGEST_ENGINE=agent`). Set `INGEST_ENGINE=logs
 
 ## Optional: Centralised Pipeline Management (Logstash only)
 
-Applies only when `INGEST_ENGINE=logstash`. Instead of managing pipeline `.conf` files on disk, you can use Kibana's [Centralised Pipeline Management](https://www.elastic.co/docs/reference/logstash/configuring-centralized-pipelines) (CPM) to create, edit, and delete pipelines from the UI. Pipelines are stored in Elasticsearch and pulled by Logstash automatically.
+Applies only when `COMPOSE_PROFILES=logstash`. Instead of managing pipeline `.conf` files on disk, you can use Kibana's [Centralised Pipeline Management](https://www.elastic.co/docs/reference/logstash/configuring-centralized-pipelines) (CPM) to create, edit, and delete pipelines from the UI. Pipelines are stored in Elasticsearch and pulled by Logstash automatically.
 
 This repo ships with a toggle — set one environment variable and Logstash switches from local file mode to centralised mode.
 

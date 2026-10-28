@@ -1,13 +1,20 @@
 FORCE_FLAG := $(if $(FORCE),--force,)
 
-# Ingest engine: agent (default) or logstash. Command-line wins, then .env, then agent.
+# Ingest profile: `make up INGEST_ENGINE=logstash` overrides .env COMPOSE_PROFILES.
+# Otherwise use COMPOSE_PROFILES from .env (what Docker Compose reads), then agent.
 ifndef INGEST_ENGINE
   INGEST_ENGINE := $(shell grep -E '^INGEST_ENGINE=' .env 2>/dev/null | tail -1 | cut -d= -f2)
 endif
-ifeq ($(strip $(INGEST_ENGINE)),)
-  INGEST_ENGINE := agent
+ifndef COMPOSE_PROFILES
+  COMPOSE_PROFILES := $(shell grep -E '^COMPOSE_PROFILES=' .env 2>/dev/null | tail -1 | cut -d= -f2)
 endif
-export COMPOSE_PROFILES := $(INGEST_ENGINE)
+ifneq ($(strip $(INGEST_ENGINE)),)
+  export COMPOSE_PROFILES := $(INGEST_ENGINE)
+else ifeq ($(strip $(COMPOSE_PROFILES)),)
+  export COMPOSE_PROFILES := agent
+else
+  export COMPOSE_PROFILES
+endif
 
 .PHONY: setup setup-no-service-user deploy-ilm deploy-indices deploy-enrich deploy-pipelines deploy-kibana \
         deploy-cases deploy-workflows deploy-tools deploy-skills deploy-agents deploy-demouser \

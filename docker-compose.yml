@@ -1,4 +1,6 @@
 ---
+# Services are gated by Compose profiles. Set COMPOSE_PROFILES in `.env`
+# (`agent` or `logstash`) to match. See .env.example.
 services:
   elastic-agent:
     profiles: ["agent"]
@@ -15,6 +17,7 @@ services:
       - elastic_agent_state:/usr/share/elastic-agent/state
     environment:
       ES_ENDPOINT: ${ES_ENDPOINT}
+      # Agent output.elasticsearch.api_key must be id:key, not the Base64 encoded form.
       ES_API_KEY_ID: ${ES_API_KEY_ID}
       ES_API_KEY: ${ES_API_KEY}
       OPENSKY_API_CLIENT_ID: ${OPENSKY_API_CLIENT_ID}

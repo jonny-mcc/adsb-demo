@@ -32,7 +32,7 @@ ______________________________________________________________________
 | `make deploy-es`             | Deploy all ES resources (ilm + indices + enrich + pipelines)             |
 | `make deploy-ai`             | Deploy AI layer (workflows + tools + skills + agents)                    |
 | `make redeploy`              | Re-deploy all resources (force overwrite)                                |
-| `make up`                    | Start ingest (Elastic Agent by default; `INGEST_ENGINE=logstash` for Logstash) |
+| `make up`                    | Start ingest (`COMPOSE_PROFILES=agent` by default; `logstash` for Logstash) |
 | `make down`                  | Stop ingest (both Agent and Logstash profiles)                           |
 | `make logs`                  | Tail ingest logs                                                         |
 | `make restart`               | Restart running ingest containers after config changes                   |
