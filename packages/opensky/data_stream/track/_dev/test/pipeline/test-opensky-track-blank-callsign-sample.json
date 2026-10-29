@@ -1,0 +1,7 @@
+{
+    "events": [
+        {
+            "message": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"        \",\"time\":1517227200,\"latitude\":50.0379,\"longitude\":8.5622,\"baro_altitude\":120.0,\"true_track\":80.0,\"on_ground\":true}"
+        }
+    ]
+}

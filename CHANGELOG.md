@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Default ingest is standalone Elastic Agent** — four CEL inputs poll OpenSky with native OAuth2 client-credentials auth and write to `demos-aircraft-adsb`. Logstash remains available behind `INGEST_ENGINE=logstash`.
+- **Default ingest is standalone Elastic Agent** — four CEL inputs poll OpenSky with native OAuth2 client-credentials auth and write to `demos-aircraft-adsb`. Logstash remains available behind `COMPOSE_PROFILES=logstash`.
+- **`.env.example` matches Compose** — `COMPOSE_PROFILES=agent` (not `INGEST_ENGINE`) selects the ingest service; comments now map Create API Key JSON `id` / `api_key` / `encoded` onto `ES_API_KEY_ID`, `ES_API_KEY`, and `ES_API_KEY_ENCODED`. Agent and Logstash need the `id:key` pair; `setup.sh` uses the encoded form.
 
 ## [1.11.5] - 2026-06-30
 

@@ -1,0 +1,26 @@
+- name: opensky.track
+  type: group
+  description: >
+    One waypoint from an OpenSky track. The collector publishes one document per path element and repeats the parent icao24, startTime, endTime, and calllsign on every waypoint. The wire key is calllsign (three l characters). The transponder address is stored only in host.id. Waypoint time, startTime, and endTime are Unix seconds.
+
+  fields:
+    - name: callsign
+      type: keyword
+      description: >
+        Callsign for the whole track, read from the wire key calllsign. Often space-padded to 8 characters. Null when none was received. This is not a stable aircraft name.
+
+    - name: latitude
+      type: double
+      description: WGS84 latitude in degrees. Null when the waypoint has no latitude.
+    - name: longitude
+      type: double
+      description: WGS84 longitude in degrees. Null when the waypoint has no longitude.
+    - name: baro_altitude
+      type: double
+      description: Barometric altitude in metres. Null when it was not received.
+    - name: true_track
+      type: double
+      description: Track in degrees clockwise from north. North is 0. Null when it was not received.
+    - name: on_ground
+      type: boolean
+      description: True when the waypoint came from a surface position report.

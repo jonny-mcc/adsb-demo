@@ -1,0 +1,7 @@
+{
+    "events": [
+        {
+            "message": "{\"icao24\":\"3c6444\",\"callsign\":\"DLH123  \",\"origin_country\":\"Germany\",\"time_position\":1458564120,\"last_contact\":1458564121,\"longitude\":8.55,\"latitude\":47.45,\"baro_altitude\":11582.4,\"on_ground\":false,\"velocity\":230.1,\"true_track\":85.4,\"vertical_rate\":-1.2,\"sensors\":null,\"geo_altitude\":11612.0,\"squawk\":\"1000\",\"spi\":false,\"position_source\":0,\"category\":6,\"response_time\":1458564121}"
+        }
+    ]
+}

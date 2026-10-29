@@ -1,0 +1,145 @@
+# OpenSky track mock.
+#
+# Pagination decision: GET /tracks/all returns one aircraft in one body.
+# The API has no page token, offset, or next URL, so this mock does not
+# invent one. A non-paginated completeness check is two interval-driven
+# polls that return the documentation track, then an empty path so later
+# polls do not change the document count. There is no cursor to resume
+# and no cursor to regress.
+#
+# time=0 is the live track. Any other time is a lookback. The system test
+# uses time=0. A lookback response has one extra waypoint so a program
+# that sends a timestamp when it should send 0 produces more documents
+# than hit_count.
+#
+# HTTP 404 is not an empty track. opensky_api.py get_track_by_aircraft
+# does not set empty_on_404, so a 404 returns None. The research script
+# records a 404 without failing because the status is undocumented. The
+# CEL program treats it as an error. icao24 000000 returns that status.
+# /states/all and /flights/all exist only so the research script can reach
+# the track call; the track program does not request them.
+#
+# Data rules do not require Authorization. auth.oauth2 adds that header
+# outside the CEL program, and unlisted headers still match, so mito, the
+# research script, and the agent all receive the same body. The token
+# rules still check the client-credentials grant.
+rules:
+  # Agent OAuth2 probe. golang.org/x/oauth2 tries HTTP Basic first and does
+  # not put the client id in the form body.
+  - path: /auth/realms/opensky-network/protocol/openid-connect/token
+    methods:
+      - POST
+    user: test-client-id
+    password: test-client-secret
+    query_params:
+      grant_type: client_credentials
+    request_headers:
+      Content-Type:
+        - application/x-www-form-urlencoded
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+        body: |
+          {"access_token":"mock-access-token","token_type":"Bearer","expires_in":1800}
+  # Published client-credentials form: grant_type, client_id, client_secret.
+  # No scope. This is the request test-api.py sends.
+  - path: /auth/realms/opensky-network/protocol/openid-connect/token
+    methods:
+      - POST
+    query_params:
+      grant_type: client_credentials
+      client_id: test-client-id
+      client_secret: test-client-secret
+    request_headers:
+      Content-Type:
+        - application/x-www-form-urlencoded
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+        body: |
+          {"access_token":"mock-access-token","token_type":"Bearer","expires_in":1800}
+  # Research script only. One documentation state vector.
+  - path: /states/all
+    methods:
+      - GET
+    query_params:
+      extended: "1"
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3996"
+        body: |
+          {"time":1517227200,"states":[["3c4b26","DLH789  ","Germany",1517227200,1517227200,8.5622,50.0379,120.0,true,0.0,80.0,0.0,null,120.0,"1000",false,0,6]]}
+  # Research script only. One flight stops the two-hour window walk.
+  - path: /flights/all
+    methods:
+      - GET
+    query_params:
+      begin: "{begin:.*}"
+      end: "{end:.*}"
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3992"
+        body: |
+          [{"icao24":"3c4b26","firstSeen":1517227200,"estDepartureAirport":"EDDF","lastSeen":1517230800,"estArrivalAirport":"EGLL","callsign":"DLH789  ","estDepartureAirportHorizDistance":1250,"estDepartureAirportVertDistance":40,"estArrivalAirportHorizDistance":980,"estArrivalAirportVertDistance":30,"departureAirportCandidatesCount":1,"arrivalAirportCandidatesCount":1}]
+  # Unknown track. Empty body, same shape as a flight 404.
+  - path: /tracks/all
+    methods:
+      - GET
+    query_params:
+      icao24: "000000"
+      time: "{time:.*}"
+    responses:
+      - status_code: 404
+        headers:
+          Content-Type:
+            - application/json
+        body: ""
+  # Live track. Polls 1 and 2 carry three documentation waypoints. Later
+  # polls are an empty path, which is zero events.
+  - path: /tracks/all
+    methods:
+      - GET
+    query_params:
+      icao24: "3c4b26"
+      time: "0"
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3992"
+        body: |
+          {{ if le .req_num 2 }}
+          {"icao24":"3c4b26","startTime":1517227200,"endTime":1517230800,"calllsign":"DLH789  ","path":[[1517227200,50.0379,8.5622,120.0,80.0,true],[1517228100,50.5,8.2,8500.0,275.0,false],[1517230800,51.47,-0.4543,80.0,270.0,true]]}
+          {{ else }}
+          {"icao24":"3c4b26","startTime":1517230800,"endTime":1517230800,"calllsign":null,"path":[]}
+          {{ end }}
+  # Lookback. One extra waypoint marks a request that did not send time=0.
+  - path: /tracks/all
+    methods:
+      - GET
+    query_params:
+      icao24: "3c4b26"
+      time: "{time:.*}"
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3992"
+        body: |
+          {"icao24":"3c4b26","startTime":1517227200,"endTime":1517230900,"calllsign":"DLH789  ","path":[[1517227200,50.0379,8.5622,120.0,80.0,true],[1517228100,50.5,8.2,8500.0,275.0,false],[1517230800,51.47,-0.4543,80.0,270.0,true],[1517230900,51.5,-0.45,0.0,270.0,true]]}

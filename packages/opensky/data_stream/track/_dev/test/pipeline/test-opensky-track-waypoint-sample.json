@@ -1,0 +1,13 @@
+{
+    "events": [
+        {
+            "message": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517227200,\"latitude\":50.0379,\"longitude\":8.5622,\"baro_altitude\":120.0,\"true_track\":80.0,\"on_ground\":true}"
+        },
+        {
+            "message": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517228100,\"latitude\":50.5,\"longitude\":8.2,\"baro_altitude\":8500.0,\"true_track\":275.0,\"on_ground\":false}"
+        },
+        {
+            "message": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517230800,\"latitude\":51.47,\"longitude\":-0.4543,\"baro_altitude\":80.0,\"true_track\":270.0,\"on_ground\":true}"
+        }
+    ]
+}

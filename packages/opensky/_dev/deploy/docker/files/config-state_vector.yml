@@ -1,0 +1,120 @@
+# OpenSky state_vector mock.
+#
+# Pagination decision: GET /states/all and GET /states/own return the whole
+# snapshot in one body. The API has no page token, offset, or next URL, so
+# this mock does not invent one. Two evaluation rounds are modelled by
+# answering the first two polls with aircraft and later polls with an empty
+# snapshot, which keeps the system-test document count stable. A flight 404
+# exists only so the research script can finish; the state_vector CEL program
+# does not call it.
+rules:
+  # Agent OAuth2 probe. golang.org/x/oauth2 tries HTTP Basic first
+  # (AuthStyleInHeader) and does not put the client id in the form body.
+  - path: /auth/realms/opensky-network/protocol/openid-connect/token
+    methods:
+      - POST
+    user: test-client-id
+    password: test-client-secret
+    query_params:
+      grant_type: client_credentials
+    request_headers:
+      Content-Type:
+        - application/x-www-form-urlencoded
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+        body: |
+          {"access_token":"mock-access-token","token_type":"Bearer","expires_in":1800}
+  # Published client-credentials form: grant_type, client_id, client_secret.
+  # No scope. This is the request test-api.py sends.
+  - path: /auth/realms/opensky-network/protocol/openid-connect/token
+    methods:
+      - POST
+    query_params:
+      grant_type: client_credentials
+      client_id: test-client-id
+      client_secret: test-client-secret
+    request_headers:
+      Content-Type:
+        - application/x-www-form-urlencoded
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+        body: |
+          {"access_token":"mock-access-token","token_type":"Bearer","expires_in":1800}
+  # Own receivers. Auth required. Zero credits on the real API.
+  # Sensors are populated because a receiver filter can return them.
+  - path: /states/own
+    methods:
+      - GET
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "4000"
+        body: |
+          {"time":1458564121,"states":[["abcdef","TEST01  ","Example",1458564120,1458564121,-0.12,51.5,1000.0,false,50.0,180.0,0.0,[900001,900002],1005.0,"7000",false,0,1]]}
+  # extended=1. Polls 1 and 2 carry the documentation example plus one empty
+  # icao24 row the CEL program must drop. Later polls are an empty snapshot.
+  - path: /states/all
+    methods:
+      - GET
+    query_params:
+      extended: "1"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3996"
+        body: |
+          {{ if le .req_num 2 }}
+          {"time":1458564121,"states":[["3c6444","DLH123  ","Germany",1458564120,1458564121,8.55,47.45,11582.4,false,230.1,85.4,-1.2,null,11612.0,"1000",false,0,6],["3e1bf9",null,"Italy",null,1458564115,null,null,null,false,null,null,null,null,null,null,false,0],["","        ","Example",null,1458564121,null,null,null,false,null,null,null,null,null,null,false,0]]}
+          {{ else }}
+          {"time":1458564121,"states":[]}
+          {{ end }}
+  # extended omitted. Category index is absent, matching a non-extended vector.
+  - path: /states/all
+    methods:
+      - GET
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3996"
+        body: |
+          {"time":1458564121,"states":[["3c6444","DLH123  ","Germany",1458564120,1458564121,8.55,47.45,11582.4,false,230.1,85.4,-1.2,null,11612.0,"1000",false,0],["3e1bf9",null,"Italy",null,1458564115,null,null,null,false,null,null,null,null,null,null,false,0]]}
+  # Research script only. HTTP 404 with an empty body is an empty flight window.
+  - path: /flights/all
+    methods:
+      - GET
+    query_params:
+      begin: "{begin:.*}"
+      end: "{end:.*}"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 404
+        headers:
+          Content-Type:
+            - application/json
+        body: ""

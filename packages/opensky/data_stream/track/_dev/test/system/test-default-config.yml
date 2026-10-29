@@ -1,0 +1,19 @@
+wait_for_data_timeout: 1m
+input: cel
+service: opensky-track
+vars:
+  url: http://{{Hostname}}:{{Port}}
+  client_id: test-client-id
+  client_secret: test-client-secret
+  token_url: http://{{Hostname}}:{{Port}}/auth/realms/opensky-network/protocol/openid-connect/token
+data_stream:
+  vars:
+    interval: 2s
+    initial_interval: 0s
+    icao24: 3c4b26
+    tags:
+      - forwarded
+assert:
+  # Three waypoints per poll across two polls. Later polls return an empty
+  # path so a third interval does not add documents. The API is not paginated.
+  hit_count: 6

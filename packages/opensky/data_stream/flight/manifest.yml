@@ -1,0 +1,82 @@
+title: OpenSky flights
+type: logs
+streams:
+  - input: cel
+    title: OpenSky flights
+    description: Collect estimated flight intervals from the OpenSky Network REST API.
+    template_path: cel.yml.hbs
+    vars:
+      - name: interval
+        type: text
+        title: Poll interval
+        description: How often to request one flight window. A live or sub-24-hour flight request costs 4 flight-bucket credits.
+        multi: false
+        required: true
+        show_user: true
+        default: 1h
+      - name: initial_interval
+        type: text
+        title: Initial lookback
+        description: Lookback for each poll, ending at the current time. Use 2h for scope all, which is the default. The collector shortens a longer all window to 2 hours, because the API rejects a wider interval, and shortens a longer aircraft window to 2 days. For aircraft, arrival, and departure a 24h lookback is the practical default. An arrival or departure window that would cross more than one UTC midnight is pulled forward to 00:00 UTC on the previous day. There is no cursor, so every poll repeats this window.
+        multi: false
+        required: true
+        show_user: true
+        default: 2h
+      - name: flight_scope
+        type: text
+        title: Flight endpoint
+        description: Which flight resource to call. all, aircraft, arrival, and departure share one object schema. all calls /flights/all. aircraft calls /flights/aircraft and requires an ICAO24 address. arrival and departure call /flights/arrival and /flights/departure and require an airport code.
+        multi: false
+        required: true
+        show_user: true
+        default: all
+      - name: icao24
+        type: text
+        title: ICAO24 address
+        description: Lower-case hexadecimal transponder address. Required when Flight endpoint is aircraft. The value is sent in lower case. Ignored for other scopes.
+        multi: false
+        required: false
+        show_user: true
+      - name: airport
+        type: text
+        title: Airport ICAO code
+        description: ICAO airport code. Required when Flight endpoint is arrival or departure. Ignored for other scopes.
+        multi: false
+        required: false
+        show_user: true
+      - name: enable_request_tracer
+        type: bool
+        title: Enable request tracer
+        description: Log HTTP requests and responses to the agent file system for debugging. Enabling this can expose credentials in the trace file.
+        multi: false
+        required: false
+        show_user: false
+        default: false
+      - name: preserve_original_event
+        type: bool
+        title: Preserve original event
+        description: Keep event.original on the stored document.
+        multi: false
+        required: true
+        show_user: true
+        default: false
+      - name: tags
+        type: text
+        title: Tags
+        description: Tags to apply to each event.
+        multi: true
+        required: true
+        show_user: false
+        default:
+          - forwarded
+      - name: processors
+        type: yaml
+        title: Processors
+        description: Processors to apply to events before they are parsed.
+        multi: false
+        required: false
+        show_user: false
+elasticsearch:
+  index_template:
+    mappings:
+      subobjects: false

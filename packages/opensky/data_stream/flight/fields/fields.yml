@@ -1,0 +1,56 @@
+- name: opensky.flight
+  type: group
+  description: >
+    Estimated flight interval. Wire names are mapped to these snake_case fields. firstSeen becomes @timestamp and event.start. lastSeen becomes event.end. The transponder address is stored only in host.id. scope records which flight URL was called.
+
+  fields:
+    - name: scope
+      type: keyword
+      description: >
+        Flight resource that produced the row: all, aircraft, arrival, or departure. The API object does not include this value.
+
+    - name: callsign
+      type: keyword
+      description: >
+        Flight callsign from callsign, often space-padded to 8 characters. Null when none was received. This is not a stable aircraft name.
+
+    - name: est_departure_airport
+      type: keyword
+      description: >
+        ICAO code of the estimated departure airport, from estDepartureAirport. Null when OpenSky did not estimate one. This is not an IATA code.
+
+    - name: est_arrival_airport
+      type: keyword
+      description: >
+        ICAO code of the estimated arrival airport, from estArrivalAirport. Null when OpenSky did not estimate one. This is not an IATA code.
+
+    - name: est_departure_airport_horiz_distance
+      type: long
+      description: >
+        Horizontal distance in metres from the last airborne position to the estimated departure airport. Wire name estDepartureAirportHorizDistance.
+
+    - name: est_departure_airport_vert_distance
+      type: long
+      description: >
+        Vertical distance in metres to the estimated departure airport. Wire name estDepartureAirportVertDistance.
+
+    - name: est_arrival_airport_horiz_distance
+      type: long
+      description: >
+        Horizontal distance in metres to the estimated arrival airport. Wire name estArrivalAirportHorizDistance.
+
+    - name: est_arrival_airport_vert_distance
+      type: long
+      description: >
+        Vertical distance in metres to the estimated arrival airport. Wire name estArrivalAirportVertDistance.
+
+    - name: departure_airport_candidates_count
+      type: long
+      description: >
+        How many other airports sit near the estimated departure airport. Wire name departureAirportCandidatesCount.
+
+    - name: arrival_airport_candidates_count
+      type: long
+      description: >
+        How many other airports sit near the estimated arrival airport. Wire name arrivalAirportCandidatesCount.
+

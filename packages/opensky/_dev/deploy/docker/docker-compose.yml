@@ -1,0 +1,40 @@
+services:
+  opensky-state_vector:
+    image: docker.elastic.co/observability/stream:v0.22.0
+    hostname: opensky-state_vector
+    ports:
+      - 8090
+    volumes:
+      - ./files:/files:ro
+    environment:
+      PORT: '8090'
+    command:
+      - http-server
+      - --addr=:8090
+      - --config=/files/config-state_vector.yml
+  opensky-flight:
+    image: docker.elastic.co/observability/stream:v0.22.0
+    hostname: opensky-flight
+    ports:
+      - 8090
+    volumes:
+      - ./files:/files:ro
+    environment:
+      PORT: '8090'
+    command:
+      - http-server
+      - --addr=:8090
+      - --config=/files/config-flight.yml
+  opensky-track:
+    image: docker.elastic.co/observability/stream:v0.22.0
+    hostname: opensky-track
+    ports:
+      - 8090
+    volumes:
+      - ./files:/files:ro
+    environment:
+      PORT: '8090'
+    command:
+      - http-server
+      - --addr=:8090
+      - --config=/files/config-track.yml

@@ -1,0 +1,123 @@
+interval: {{interval}}
+resource.tracer:
+  enabled: {{enable_request_tracer}}
+  filename: "../../logs/cel/http-request-trace-*.ndjson"
+  maxbackups: 5
+{{#if proxy_url}}
+resource.proxy_url: {{proxy_url}}
+{{/if}}
+{{#if ssl}}
+resource.ssl: {{ssl}}
+{{/if}}
+{{#if http_client_timeout}}
+resource.timeout: {{http_client_timeout}}
+{{/if}}
+resource.headers:
+  Accept:
+    - application/json
+auth.oauth2:
+  client.id: {{client_id}}
+  client.secret: {{client_secret}}
+  token_url: {{token_url}}
+{{#if scopes}}
+  scopes:
+{{#each scopes as |scope|}}
+    - {{scope}}
+{{/each}}
+{{/if}}
+resource.url: {{url}}
+state:
+  initial_interval: {{initial_interval}}
+  icao24: "{{icao24}}"
+program: |-
+  string(state.?icao24.orValue("")).trim_space().as(icao24,
+    icao24.to_lower().matches("^[0-9a-f]{6}$") ?
+      state.with(
+        request(
+          "GET",
+          state.url.trim_right("/") + "/tracks/all?" + {
+            "icao24": [icao24.to_lower()],
+            "time": [
+              (duration(state.initial_interval) > duration("0s")) ?
+                string(int(now - duration(state.initial_interval)))
+              :
+                "0",
+            ],
+          }.format_query()
+        ).do_request().as(resp,
+          (resp.StatusCode == 200) ?
+            resp.Body.decode_json().as(body,
+              {
+                "events": (
+                  (body.?path.orValue(null) == null) ?
+                    []
+                  :
+                    body.path
+                ).map(point,
+                  size(point) >= 6,
+                  {
+                    "message": {
+                      "icao24": body.?icao24.orValue(icao24.to_lower()),
+                      "startTime": body.?startTime.orValue(null),
+                      "endTime": body.?endTime.orValue(null),
+                      "calllsign": body.?calllsign.orValue(null),
+                      "time": point[0],
+                      "latitude": point[1],
+                      "longitude": point[2],
+                      "baro_altitude": point[3],
+                      "true_track": point[4],
+                      "on_ground": point[5],
+                    }.encode_json(),
+                  }
+                ),
+                "want_more": false,
+              }
+            )
+          :
+            // 404 is an error. The Python client does not treat /tracks/all
+            // 404 as an empty result. The research script only records it.
+            {
+              "events": {
+                "error": {
+                  "code": string(resp.StatusCode),
+                  "id": string(resp.Status),
+                  "message": "GET /tracks/all: " + (
+                    (size(resp.Body) != 0) ?
+                      string(resp.Body)
+                    :
+                      string(resp.Status)
+                  ),
+                },
+              },
+              "want_more": false,
+            }
+        )
+      )
+    :
+      state.with(
+        {
+          "events": {
+            "error": {
+              "code": "config",
+              "id": "icao24",
+              "message": "track requires one lower-case hexadecimal icao24",
+            },
+          },
+          "want_more": false,
+        }
+      )
+  )
+tags:
+{{#if preserve_original_event}}
+  - preserve_original_event
+{{/if}}
+{{#each tags as |tag|}}
+  - {{tag}}
+{{/each}}
+{{#contains "forwarded" tags}}
+publisher_pipeline.disable_host: true
+{{/contains}}
+{{#if processors}}
+processors:
+{{processors}}
+{{/if}}

@@ -1,0 +1,118 @@
+title: OpenSky state vectors
+type: logs
+streams:
+  - input: cel
+    title: OpenSky state vectors
+    description: Collect aircraft state-vector snapshots from the OpenSky Network REST API.
+    template_path: cel.yml.hbs
+    vars:
+      - name: interval
+        type: text
+        title: Poll interval
+        description: How often to request a snapshot. A global /states/all call costs 4 state-bucket credits.
+        multi: false
+        required: true
+        show_user: true
+        default: 6m
+      - name: initial_interval
+        type: text
+        title: Initial lookback
+        description: How far back the snapshot time reaches. 0s requests the current snapshot and omits the time parameter. Authenticated /states/all rejects a time older than one hour with HTTP 400.
+        multi: false
+        required: true
+        show_user: true
+        default: 0s
+      - name: lamin
+        type: text
+        title: Minimum latitude
+        description: WGS84 degrees, from -90 to 90. Ignored unless lamin, lamax, lomin, and lomax are all set. The box area sets the /states/all credit cost.
+        multi: false
+        required: false
+        show_user: true
+      - name: lamax
+        type: text
+        title: Maximum latitude
+        description: WGS84 degrees, from -90 to 90. Ignored unless lamin, lamax, lomin, and lomax are all set.
+        multi: false
+        required: false
+        show_user: true
+      - name: lomin
+        type: text
+        title: Minimum longitude
+        description: WGS84 degrees, from -180 to 180. Ignored unless lamin, lamax, lomin, and lomax are all set.
+        multi: false
+        required: false
+        show_user: true
+      - name: lomax
+        type: text
+        title: Maximum longitude
+        description: WGS84 degrees, from -180 to 180. Ignored unless lamin, lamax, lomin, and lomax are all set.
+        multi: false
+        required: false
+        show_user: true
+      - name: extended
+        type: bool
+        title: Include aircraft category
+        description: When true, send extended=1 so each vector includes the emitter category.
+        multi: false
+        required: true
+        show_user: true
+        default: true
+      - name: own_sensors_only
+        type: bool
+        title: Own receivers only
+        description: When true, call /states/own instead of /states/all. The account must own receivers, or the API returns HTTP 403. This call costs zero credits.
+        multi: false
+        required: true
+        show_user: true
+        default: false
+      - name: serials
+        type: text
+        title: Receiver serials
+        description: Repeatable receiver serial numbers. Sent only with /states/own. Aircraft seen by any listed receiver are returned.
+        multi: true
+        required: false
+        show_user: true
+      - name: icao24
+        type: text
+        title: ICAO24 address
+        description: Optional lower-case hexadecimal transponder address. Repeat the value to request more than one aircraft.
+        multi: true
+        required: false
+        show_user: true
+      - name: enable_request_tracer
+        type: bool
+        title: Enable request tracer
+        description: Log HTTP requests and responses to the agent file system for debugging. Enabling this can expose credentials in the trace file.
+        multi: false
+        required: false
+        show_user: false
+        default: false
+      - name: preserve_original_event
+        type: bool
+        title: Preserve original event
+        description: Keep event.original on the stored document.
+        multi: false
+        required: true
+        show_user: true
+        default: false
+      - name: tags
+        type: text
+        title: Tags
+        description: Tags to apply to each event.
+        multi: true
+        required: true
+        show_user: false
+        default:
+          - forwarded
+      - name: processors
+        type: yaml
+        title: Processors
+        description: Processors to apply to events before they are parsed.
+        multi: false
+        required: false
+        show_user: false
+elasticsearch:
+  index_template:
+    mappings:
+      subobjects: false

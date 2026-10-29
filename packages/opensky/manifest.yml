@@ -1,0 +1,101 @@
+format_version: "3.4.2"
+name: opensky
+title: "OpenSky Network"
+version: "0.1.0"
+source:
+  license: "Elastic-2.0"
+description: "Collect aircraft state vectors, flight intervals, and tracks from the OpenSky Network REST API."
+type: integration
+categories:
+  - custom
+conditions:
+  kibana:
+    version: "^8.19.0 || ^9.1.0"
+  elastic:
+    subscription: "basic"
+screenshots:
+  - src: /img/sample-screenshot.png
+    title: Sample screenshot
+    size: 600x600
+    type: image/png
+icons:
+  - src: /img/sample-logo.svg
+    title: OpenSky Network logo
+    size: 32x32
+    type: image/svg+xml
+policy_templates:
+  - name: opensky
+    title: OpenSky Network
+    description: Collect aircraft surveillance data from the OpenSky Network REST API.
+    data_streams:
+      - state_vector
+      - flight
+      - track
+    inputs:
+      - type: cel
+        title: Collect OpenSky Network data
+        description: Poll the OpenSky Network REST API with OAuth2 client credentials.
+        vars:
+          - name: url
+            type: text
+            title: API URL
+            description: OpenSky REST root, including the scheme. The package appends paths such as `/states/all`.
+            multi: false
+            required: true
+            show_user: true
+            default: https://opensky-network.org/api
+          - name: client_id
+            type: text
+            title: OAuth2 client ID
+            description: Client ID from an API client on the OpenSky Network account page.
+            multi: false
+            required: true
+            show_user: true
+          - name: client_secret
+            type: password
+            secret: true
+            title: OAuth2 client secret
+            description: Client secret from the same OpenSky API client.
+            multi: false
+            required: true
+            show_user: true
+          - name: token_url
+            type: text
+            title: OAuth2 token URL
+            description: Keycloak client-credentials token endpoint. The published grant sends no scope.
+            multi: false
+            required: true
+            show_user: true
+            default: https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token
+          - name: scopes
+            type: text
+            title: OAuth2 scopes
+            description: Leave empty. OpenSky's published client-credentials example does not send a scope.
+            multi: true
+            required: false
+            show_user: false
+          - name: http_client_timeout
+            type: text
+            title: HTTP timeout
+            description: Socket timeout for the token host and the API host. Valid units are ns, us, ms, s, m, h. A global state response is large, so the default is 90s.
+            multi: false
+            required: false
+            show_user: false
+            default: 90s
+          - name: proxy_url
+            type: text
+            title: Proxy URL
+            description: HTTP proxy for both the token host and the API host, in the form http[s]://<user>:<password>@<server>:<port>.
+            multi: false
+            required: false
+            show_user: false
+          - name: ssl
+            type: yaml
+            title: TLS settings
+            description: TLS options for the OpenSky API and token hosts. See the Elastic Agent SSL documentation.
+            multi: false
+            required: false
+            show_user: false
+owner:
+  github: elastic/integrations
+  type: elastic

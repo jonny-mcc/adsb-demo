@@ -1,0 +1,61 @@
+{
+    "expected": [
+        {
+            "@timestamp": "2016-03-21T12:42:00.000Z",
+            "ecs": {
+                "version": "9.3.0"
+            },
+            "event": {
+                "category": [
+                    "host"
+                ],
+                "created": "2016-03-21T12:42:01.000Z",
+                "kind": "event",
+                "original": "{\"icao24\":\"3c6444\",\"callsign\":\"DLH123  \",\"origin_country\":\"Germany\",\"time_position\":1458564120,\"last_contact\":1458564121,\"longitude\":8.55,\"latitude\":47.45,\"baro_altitude\":11582.4,\"on_ground\":false,\"velocity\":230.1,\"true_track\":85.4,\"vertical_rate\":-1.2,\"sensors\":null,\"geo_altitude\":11612.0,\"squawk\":\"1000\",\"spi\":false,\"position_source\":0,\"category\":6,\"response_time\":1458564121}",
+                "type": [
+                    "info"
+                ]
+            },
+            "host": {
+                "geo": {
+                    "location": {
+                        "lat": 47.45,
+                        "lon": 8.55
+                    }
+                },
+                "id": "3c6444"
+            },
+            "observer": {
+                "product": "OpenSky REST API",
+                "vendor": "OpenSky Network"
+            },
+            "opensky": {
+                "state_vector": {
+                    "baro_altitude": 11582.4,
+                    "callsign": "DLH123  ",
+                    "category": 6,
+                    "geo_altitude": 11612.0,
+                    "latitude": 47.45,
+                    "longitude": 8.55,
+                    "on_ground": false,
+                    "origin_country": "Germany",
+                    "position_source": 0,
+                    "response_time": "2016-03-21T12:42:01.000Z",
+                    "spi": false,
+                    "squawk": "1000",
+                    "true_track": 85.4,
+                    "velocity": 230.1,
+                    "vertical_rate": -1.2
+                }
+            },
+            "related": {
+                "hosts": [
+                    "DLH123"
+                ]
+            },
+            "tags": [
+                "preserve_original_event"
+            ]
+        }
+    ]
+}

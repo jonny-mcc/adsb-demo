@@ -1,0 +1,7 @@
+{
+    "events": [
+        {
+            "message": "{\"icao24\":\"3c675a\",\"firstSeen\":1517227200,\"estDepartureAirport\":\"EDDF\",\"lastSeen\":1517230800,\"estArrivalAirport\":\"EGLL\",\"callsign\":\"        \",\"estDepartureAirportHorizDistance\":1250,\"estDepartureAirportVertDistance\":40,\"estArrivalAirportHorizDistance\":980,\"estArrivalAirportVertDistance\":30,\"departureAirportCandidatesCount\":1,\"arrivalAirportCandidatesCount\":2,\"scope\":\"departure\"}"
+        }
+    ]
+}

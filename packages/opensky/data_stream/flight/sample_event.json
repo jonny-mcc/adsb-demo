@@ -1,0 +1,70 @@
+{
+    "@timestamp": "2018-01-29T10:00:00.000Z",
+    "agent": {
+        "ephemeral_id": "e60ee1f2-9564-46cd-8e1e-338d7f6868cf",
+        "id": "e518439e-e738-429e-8daa-282d9eb8e33f",
+        "name": "elastic-agent-82483",
+        "type": "filebeat",
+        "version": "9.5.5"
+    },
+    "data_stream": {
+        "dataset": "opensky.flight",
+        "namespace": "81561",
+        "type": "logs"
+    },
+    "ecs": {
+        "version": "9.3.0"
+    },
+    "elastic_agent": {
+        "id": "e518439e-e738-429e-8daa-282d9eb8e33f",
+        "snapshot": false,
+        "version": "9.5.5"
+    },
+    "event": {
+        "agent_id_status": "verified",
+        "category": [
+            "host"
+        ],
+        "dataset": "opensky.flight",
+        "end": "2018-01-29T12:00:00.000Z",
+        "ingested": "2026-10-29T12:20:34Z",
+        "kind": "event",
+        "module": "opensky",
+        "start": "2018-01-29T10:00:00.000Z",
+        "type": [
+            "info"
+        ]
+    },
+    "host": {
+        "id": "3c675a"
+    },
+    "input": {
+        "type": "cel"
+    },
+    "observer": {
+        "product": "OpenSky REST API",
+        "vendor": "OpenSky Network"
+    },
+    "opensky": {
+        "flight": {
+            "arrival_airport_candidates_count": 1,
+            "callsign": "DLH456  ",
+            "departure_airport_candidates_count": 0,
+            "est_arrival_airport": "EDDF",
+            "est_arrival_airport_horiz_distance": 400,
+            "est_arrival_airport_vert_distance": 20,
+            "est_departure_airport": "LFPG",
+            "est_departure_airport_horiz_distance": 1500,
+            "est_departure_airport_vert_distance": 50,
+            "scope": "all"
+        }
+    },
+    "related": {
+        "hosts": [
+            "DLH456"
+        ]
+    },
+    "tags": [
+        "forwarded"
+    ]
+}

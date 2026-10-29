@@ -1,0 +1,151 @@
+{
+    "expected": [
+        {
+            "@timestamp": "2018-01-29T12:00:00.000Z",
+            "ecs": {
+                "version": "9.3.0"
+            },
+            "event": {
+                "category": [
+                    "host"
+                ],
+                "end": "2018-01-29T13:00:00.000Z",
+                "kind": "event",
+                "original": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517227200,\"latitude\":50.0379,\"longitude\":8.5622,\"baro_altitude\":120.0,\"true_track\":80.0,\"on_ground\":true}",
+                "start": "2018-01-29T12:00:00.000Z",
+                "type": [
+                    "info"
+                ]
+            },
+            "host": {
+                "geo": {
+                    "location": {
+                        "lat": 50.0379,
+                        "lon": 8.5622
+                    }
+                },
+                "id": "3c4b26"
+            },
+            "observer": {
+                "product": "OpenSky REST API",
+                "vendor": "OpenSky Network"
+            },
+            "opensky": {
+                "track": {
+                    "baro_altitude": 120.0,
+                    "callsign": "DLH789  ",
+                    "latitude": 50.0379,
+                    "longitude": 8.5622,
+                    "on_ground": true,
+                    "true_track": 80.0
+                }
+            },
+            "related": {
+                "hosts": [
+                    "DLH789"
+                ]
+            },
+            "tags": [
+                "preserve_original_event"
+            ]
+        },
+        {
+            "@timestamp": "2018-01-29T12:15:00.000Z",
+            "ecs": {
+                "version": "9.3.0"
+            },
+            "event": {
+                "category": [
+                    "host"
+                ],
+                "end": "2018-01-29T13:00:00.000Z",
+                "kind": "event",
+                "original": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517228100,\"latitude\":50.5,\"longitude\":8.2,\"baro_altitude\":8500.0,\"true_track\":275.0,\"on_ground\":false}",
+                "start": "2018-01-29T12:00:00.000Z",
+                "type": [
+                    "info"
+                ]
+            },
+            "host": {
+                "geo": {
+                    "location": {
+                        "lat": 50.5,
+                        "lon": 8.2
+                    }
+                },
+                "id": "3c4b26"
+            },
+            "observer": {
+                "product": "OpenSky REST API",
+                "vendor": "OpenSky Network"
+            },
+            "opensky": {
+                "track": {
+                    "baro_altitude": 8500.0,
+                    "callsign": "DLH789  ",
+                    "latitude": 50.5,
+                    "longitude": 8.2,
+                    "on_ground": false,
+                    "true_track": 275.0
+                }
+            },
+            "related": {
+                "hosts": [
+                    "DLH789"
+                ]
+            },
+            "tags": [
+                "preserve_original_event"
+            ]
+        },
+        {
+            "@timestamp": "2018-01-29T13:00:00.000Z",
+            "ecs": {
+                "version": "9.3.0"
+            },
+            "event": {
+                "category": [
+                    "host"
+                ],
+                "end": "2018-01-29T13:00:00.000Z",
+                "kind": "event",
+                "original": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517230800,\"latitude\":51.47,\"longitude\":-0.4543,\"baro_altitude\":80.0,\"true_track\":270.0,\"on_ground\":true}",
+                "start": "2018-01-29T12:00:00.000Z",
+                "type": [
+                    "info"
+                ]
+            },
+            "host": {
+                "geo": {
+                    "location": {
+                        "lat": 51.47,
+                        "lon": -0.4543
+                    }
+                },
+                "id": "3c4b26"
+            },
+            "observer": {
+                "product": "OpenSky REST API",
+                "vendor": "OpenSky Network"
+            },
+            "opensky": {
+                "track": {
+                    "baro_altitude": 80.0,
+                    "callsign": "DLH789  ",
+                    "latitude": 51.47,
+                    "longitude": -0.4543,
+                    "on_ground": true,
+                    "true_track": 270.0
+                }
+            },
+            "related": {
+                "hosts": [
+                    "DLH789"
+                ]
+            },
+            "tags": [
+                "preserve_original_event"
+            ]
+        }
+    ]
+}
