@@ -1,0 +1,179 @@
+# OpenSky flight mock.
+#
+# Pagination decision: each GET /flights/* response is the whole window. The
+# API has no page token, offset, or next URL, so this mock does not invent
+# one. A non-paginated completeness check is two interval-driven polls that
+# return flights, then an empty array so later polls do not change the
+# document count. There is no cursor to resume and no cursor to regress.
+#
+# HTTP 404 with an empty body is an empty window. The aircraft address
+# 000000 returns that status. The flight CEL program treats it as zero
+# events. /states/all exists only so the research script can reach the
+# flight call; the flight program does not request it.
+rules:
+  # Agent OAuth2 probe. golang.org/x/oauth2 tries HTTP Basic first and does
+  # not put the client id in the form body.
+  - path: /auth/realms/opensky-network/protocol/openid-connect/token
+    methods:
+      - POST
+    user: test-client-id
+    password: test-client-secret
+    query_params:
+      grant_type: client_credentials
+    request_headers:
+      Content-Type:
+        - application/x-www-form-urlencoded
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+        body: |
+          {"access_token":"mock-access-token","token_type":"Bearer","expires_in":1800}
+  # Published client-credentials form: grant_type, client_id, client_secret.
+  # No scope. This is the request test-api.py sends.
+  - path: /auth/realms/opensky-network/protocol/openid-connect/token
+    methods:
+      - POST
+    query_params:
+      grant_type: client_credentials
+      client_id: test-client-id
+      client_secret: test-client-secret
+    request_headers:
+      Content-Type:
+        - application/x-www-form-urlencoded
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+        body: |
+          {"access_token":"mock-access-token","token_type":"Bearer","expires_in":1800}
+  # Research script only. One documentation state vector.
+  - path: /states/all
+    methods:
+      - GET
+    query_params:
+      extended: "1"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3996"
+        body: |
+          {"time":1458564121,"states":[["3c6444","DLH123  ","Germany",1458564120,1458564121,8.55,47.45,11582.4,false,230.1,85.4,-1.2,null,11612.0,"1000",false,0]]}
+  # Empty window. More specific than the general aircraft rule.
+  - path: /flights/aircraft
+    methods:
+      - GET
+    query_params:
+      icao24: "000000"
+      begin: "{begin:.*}"
+      end: "{end:.*}"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 404
+        headers:
+          Content-Type:
+            - application/json
+        body: ""
+  # Polls 1 and 2 carry the documentation flights. Later polls are an empty
+  # array, which is also zero events.
+  - path: /flights/all
+    methods:
+      - GET
+    query_params:
+      begin: "{begin:.*}"
+      end: "{end:.*}"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3992"
+        body: |
+          {{ if le .req_num 2 }}
+          [{"icao24":"3c675a","firstSeen":1517227200,"estDepartureAirport":"EDDF","lastSeen":1517230800,"estArrivalAirport":"EGLL","callsign":"DLH456  ","estDepartureAirportHorizDistance":1250,"estDepartureAirportVertDistance":40,"estArrivalAirportHorizDistance":980,"estArrivalAirportVertDistance":30,"departureAirportCandidatesCount":1,"arrivalAirportCandidatesCount":2},{"icao24":"3c675a","firstSeen":1517220000,"estDepartureAirport":"LFPG","lastSeen":1517227200,"estArrivalAirport":"EDDF","callsign":"DLH456  ","estDepartureAirportHorizDistance":1500,"estDepartureAirportVertDistance":50,"estArrivalAirportHorizDistance":400,"estArrivalAirportVertDistance":20,"departureAirportCandidatesCount":0,"arrivalAirportCandidatesCount":1}]
+          {{ else }}
+          []
+          {{ end }}
+  - path: /flights/aircraft
+    methods:
+      - GET
+    query_params:
+      icao24: "{icao24:.*}"
+      begin: "{begin:.*}"
+      end: "{end:.*}"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3992"
+        body: |
+          {{ if le .req_num 2 }}
+          [{"icao24":"3c675a","firstSeen":1517227200,"estDepartureAirport":"EDDF","lastSeen":1517230800,"estArrivalAirport":"EGLL","callsign":"DLH456  ","estDepartureAirportHorizDistance":1250,"estDepartureAirportVertDistance":40,"estArrivalAirportHorizDistance":980,"estArrivalAirportVertDistance":30,"departureAirportCandidatesCount":1,"arrivalAirportCandidatesCount":2}]
+          {{ else }}
+          []
+          {{ end }}
+  - path: /flights/arrival
+    methods:
+      - GET
+    query_params:
+      airport: "{airport:.*}"
+      begin: "{begin:.*}"
+      end: "{end:.*}"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3992"
+        body: |
+          {{ if le .req_num 2 }}
+          [{"icao24":"3c675a","firstSeen":1517220000,"estDepartureAirport":"LFPG","lastSeen":1517227200,"estArrivalAirport":"EDDF","callsign":"DLH456  ","estDepartureAirportHorizDistance":1500,"estDepartureAirportVertDistance":50,"estArrivalAirportHorizDistance":400,"estArrivalAirportVertDistance":20,"departureAirportCandidatesCount":0,"arrivalAirportCandidatesCount":1}]
+          {{ else }}
+          []
+          {{ end }}
+  - path: /flights/departure
+    methods:
+      - GET
+    query_params:
+      airport: "{airport:.*}"
+      begin: "{begin:.*}"
+      end: "{end:.*}"
+    request_headers:
+      Authorization:
+        - Bearer mock-access-token
+    responses:
+      - status_code: 200
+        headers:
+          Content-Type:
+            - application/json
+          X-Rate-Limit-Remaining:
+            - "3992"
+        body: |
+          {{ if le .req_num 2 }}
+          [{"icao24":"3c675a","firstSeen":1517227200,"estDepartureAirport":"EDDF","lastSeen":1517230800,"estArrivalAirport":"EGLL","callsign":"DLH456  ","estDepartureAirportHorizDistance":1250,"estDepartureAirportVertDistance":40,"estArrivalAirportHorizDistance":980,"estArrivalAirportVertDistance":30,"departureAirportCandidatesCount":1,"arrivalAirportCandidatesCount":2}]
+          {{ else }}
+          []
+          {{ end }}

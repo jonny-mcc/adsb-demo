@@ -1,0 +1,7 @@
+{
+    "events": [
+        {
+            "message": "{\"icao24\":\"3c675a\",\"firstSeen\":1517220000,\"estDepartureAirport\":\"LFPG\",\"lastSeen\":1517227200,\"estArrivalAirport\":\"EDDF\",\"callsign\":\"DLH456  \",\"estDepartureAirportHorizDistance\":1500,\"estDepartureAirportVertDistance\":50,\"estArrivalAirportHorizDistance\":400,\"estArrivalAirportVertDistance\":20,\"departureAirportCandidatesCount\":0,\"arrivalAirportCandidatesCount\":1,\"scope\":\"arrival\"}"
+        }
+    ]
+}

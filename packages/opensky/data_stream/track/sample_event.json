@@ -1,0 +1,75 @@
+{
+    "@timestamp": "2018-01-29T12:00:00.000Z",
+    "agent": {
+        "ephemeral_id": "6e04ef23-984d-482c-b8d6-1961dfd63ebd",
+        "id": "a3085e44-e7b8-4e65-82ad-0c0d08006bac",
+        "name": "elastic-agent-39706",
+        "type": "filebeat",
+        "version": "9.5.5"
+    },
+    "data_stream": {
+        "dataset": "opensky.track",
+        "namespace": "29589",
+        "type": "logs"
+    },
+    "ecs": {
+        "version": "9.3.0"
+    },
+    "elastic_agent": {
+        "id": "a3085e44-e7b8-4e65-82ad-0c0d08006bac",
+        "snapshot": false,
+        "version": "9.5.5"
+    },
+    "event": {
+        "agent_id_status": "verified",
+        "category": [
+            "host"
+        ],
+        "dataset": "opensky.track",
+        "end": "2018-01-29T13:00:00.000Z",
+        "ingested": "2026-10-29T12:22:53Z",
+        "kind": "event",
+        "module": "opensky",
+        "start": "2018-01-29T12:00:00.000Z",
+        "type": [
+            "info"
+        ]
+    },
+    "host": {
+        "geo": {
+            "location": {
+                "coordinates": [
+                    8.562199920415878,
+                    50.03789998590946
+                ],
+                "type": "Point"
+            }
+        },
+        "id": "3c4b26"
+    },
+    "input": {
+        "type": "cel"
+    },
+    "observer": {
+        "product": "OpenSky REST API",
+        "vendor": "OpenSky Network"
+    },
+    "opensky": {
+        "track": {
+            "baro_altitude": 120,
+            "callsign": "DLH789  ",
+            "latitude": 50.0379,
+            "longitude": 8.5622,
+            "on_ground": true,
+            "true_track": 80
+        }
+    },
+    "related": {
+        "hosts": [
+            "DLH789"
+        ]
+    },
+    "tags": [
+        "forwarded"
+    ]
+}

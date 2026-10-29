@@ -1,0 +1,71 @@
+title: OpenSky tracks
+type: logs
+streams:
+  - input: cel
+    title: OpenSky tracks
+    description: Collect per-aircraft flight tracks from the OpenSky Network REST API.
+    template_path: cel.yml.hbs
+    vars:
+      - name: interval
+        type: text
+        title: Poll interval
+        description: How often to request one aircraft track. A live or sub-24-hour track request costs 4 track-bucket credits.
+        multi: false
+        required: true
+        show_user: true
+        default: 10m
+      - name: initial_interval
+        type: text
+        title: Initial lookback
+        description: >
+          0s requests the live track and sends time=0. Any other duration sends time set to now minus this duration. OpenSky rejects a time older than 30 days. There is no cursor, so every poll repeats this request for the one configured aircraft.
+
+        multi: false
+        required: true
+        show_user: true
+        default: 0s
+      - name: icao24
+        type: text
+        title: ICAO24 address
+        description: >
+          Lower-case hexadecimal transponder address of one aircraft. The value is sent in lower case. The tracks endpoint accepts one aircraft per request.
+
+        multi: false
+        required: true
+        show_user: true
+      - name: enable_request_tracer
+        type: bool
+        title: Enable request tracer
+        description: Log HTTP requests and responses to the agent file system for debugging. Enabling this can expose credentials in the trace file.
+        multi: false
+        required: false
+        show_user: false
+        default: false
+      - name: preserve_original_event
+        type: bool
+        title: Preserve original event
+        description: Keep event.original on the stored document.
+        multi: false
+        required: true
+        show_user: true
+        default: false
+      - name: tags
+        type: text
+        title: Tags
+        description: Tags to apply to each event.
+        multi: true
+        required: true
+        show_user: false
+        default:
+          - forwarded
+      - name: processors
+        type: yaml
+        title: Processors
+        description: Processors to apply to events before they are parsed.
+        multi: false
+        required: false
+        show_user: false
+elasticsearch:
+  index_template:
+    mappings:
+      subobjects: false

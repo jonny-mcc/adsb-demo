@@ -1,0 +1,58 @@
+{
+    "@timestamp": "2016-03-21T12:41:55.000Z",
+    "agent": {
+        "ephemeral_id": "9fe24b47-3c18-4bf5-ac20-8dd15550fbd8",
+        "id": "9d13f7e1-ba85-43b7-8102-465997684af4",
+        "name": "elastic-agent-85574",
+        "type": "filebeat",
+        "version": "9.5.5"
+    },
+    "data_stream": {
+        "dataset": "opensky.state_vector",
+        "namespace": "57690",
+        "type": "logs"
+    },
+    "ecs": {
+        "version": "9.3.0"
+    },
+    "elastic_agent": {
+        "id": "9d13f7e1-ba85-43b7-8102-465997684af4",
+        "snapshot": false,
+        "version": "9.5.5"
+    },
+    "event": {
+        "agent_id_status": "verified",
+        "category": [
+            "host"
+        ],
+        "dataset": "opensky.state_vector",
+        "ingested": "2026-10-29T12:22:03Z",
+        "kind": "event",
+        "module": "opensky",
+        "type": [
+            "info"
+        ]
+    },
+    "host": {
+        "id": "3e1bf9"
+    },
+    "input": {
+        "type": "cel"
+    },
+    "observer": {
+        "product": "OpenSky REST API",
+        "vendor": "OpenSky Network"
+    },
+    "opensky": {
+        "state_vector": {
+            "on_ground": false,
+            "origin_country": "Italy",
+            "position_source": 0,
+            "response_time": "2016-03-21T12:42:01.000Z",
+            "spi": false
+        }
+    },
+    "tags": [
+        "forwarded"
+    ]
+}

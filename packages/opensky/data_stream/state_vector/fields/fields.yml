@@ -1,0 +1,66 @@
+- name: opensky.state_vector
+  type: group
+  description: >
+    Aircraft state vector fields decoded from the OpenSky positional array. Null source values are omitted. The transponder address is stored only in host.id.
+
+  fields:
+    - name: callsign
+      type: keyword
+      description: >
+        Flight callsign, often space-padded to 8 characters. Null when none was received. This is not a stable aircraft name.
+
+    - name: origin_country
+      type: keyword
+      description: >
+        Country name inferred from the ICAO address allocation. This is not the country under the current position.
+
+    - name: response_time
+      type: date
+      description: >
+        Snapshot clock from the response envelope, originally Unix seconds. Each vector represents the second ending at this instant.
+
+    - name: latitude
+      type: double
+      description: WGS84 latitude in degrees. Null when OpenSky has no recent position.
+    - name: longitude
+      type: double
+      description: WGS84 longitude in degrees. Null when OpenSky has no recent position.
+    - name: baro_altitude
+      type: double
+      description: Barometric altitude in metres. Null when it was not received.
+    - name: geo_altitude
+      type: double
+      description: Geometric altitude in metres. Null when it was not received.
+    - name: on_ground
+      type: boolean
+      description: True when the position came from a surface position report.
+    - name: velocity
+      type: double
+      description: Ground speed in metres per second. Null when it was not received.
+    - name: true_track
+      type: double
+      description: Track in degrees clockwise from north. North is 0. Null when it was not received.
+    - name: vertical_rate
+      type: double
+      description: Vertical rate in metres per second. Positive is climb. Null when it was not received.
+    - name: sensors
+      type: long
+      description: >
+        Receiver identifiers that contributed to the vector. Null on a global or boxed /states/all response that did not filter by sensor.
+
+    - name: squawk
+      type: keyword
+      description: Transponder code, usually four digits. Null when none was received.
+    - name: spi
+      type: boolean
+      description: Special purpose indicator from the transponder.
+    - name: position_source
+      type: long
+      description: >
+        Position source. 0 is ADS-B, 1 is ASTERIX, 2 is MLAT, and 3 is FLARM. The REST API does not currently return MLAT positions.
+
+    - name: category
+      type: long
+      description: >
+        Emitter category from 0 to 20. Present only when the request sent extended=1. Null when the vector has no category element.
+

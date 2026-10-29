@@ -1,0 +1,149 @@
+interval: {{interval}}
+resource.tracer:
+  enabled: {{enable_request_tracer}}
+  filename: "../../logs/cel/http-request-trace-*.ndjson"
+  maxbackups: 5
+{{#if proxy_url}}
+resource.proxy_url: {{proxy_url}}
+{{/if}}
+{{#if ssl}}
+resource.ssl: {{ssl}}
+{{/if}}
+{{#if http_client_timeout}}
+resource.timeout: {{http_client_timeout}}
+{{/if}}
+resource.max_body_size: 52428800
+resource.headers:
+  Accept:
+    - application/json
+auth.oauth2:
+  client.id: {{client_id}}
+  client.secret: {{client_secret}}
+  token_url: {{token_url}}
+{{#if scopes}}
+  scopes:
+{{#each scopes as |scope|}}
+    - {{scope}}
+{{/each}}
+{{/if}}
+resource.url: {{url}}
+state:
+  initial_interval: {{initial_interval}}
+  extended: {{extended}}
+  own_sensors_only: {{own_sensors_only}}
+{{#if lamin}}
+  lamin: "{{lamin}}"
+{{/if}}
+{{#if lamax}}
+  lamax: "{{lamax}}"
+{{/if}}
+{{#if lomin}}
+  lomin: "{{lomin}}"
+{{/if}}
+{{#if lomax}}
+  lomax: "{{lomax}}"
+{{/if}}
+{{#if icao24}}
+  icao24:
+{{#each icao24 as |item|}}
+    - "{{item}}"
+{{/each}}
+{{/if}}
+{{#if serials}}
+  serials:
+{{#each serials as |item|}}
+    - "{{item}}"
+{{/each}}
+{{/if}}
+program: |-
+  (
+    state.?lamin.orValue("") != "" && state.?lamax.orValue("") != "" && state.?lomin.orValue("") != "" &&
+    state.?lomax.orValue("") != ""
+  ).as(box,
+    (state.own_sensors_only ? "/states/own" : "/states/all").as(path,
+      {
+        ?"extended": state.extended ? optional.of(["1"]) : optional.none(),
+        ?"time": (duration(state.initial_interval) > duration("0s")) ?
+          optional.of([string(int(now - duration(state.initial_interval)))])
+        :
+          optional.none(),
+        ?"lamin": box ? optional.of([string(state.lamin)]) : optional.none(),
+        ?"lomin": box ? optional.of([string(state.lomin)]) : optional.none(),
+        ?"lamax": box ? optional.of([string(state.lamax)]) : optional.none(),
+        ?"lomax": box ? optional.of([string(state.lomax)]) : optional.none(),
+        ?"icao24": (size(state.?icao24.orValue([])) > 0) ?
+          optional.of(state.icao24)
+        :
+          optional.none(),
+        ?"serials": (state.own_sensors_only && size(state.?serials.orValue([])) > 0) ?
+          optional.of(state.serials)
+        :
+          optional.none(),
+      }.format_query().as(qs,
+        state.with(
+          request(
+            "GET",
+            state.url.trim_right("/") + path + ((qs != "") ? ("?" + qs) : "")
+          ).do_request().as(resp,
+            (resp.StatusCode == 200) ?
+              resp.Body.decode_json().as(body,
+                {
+                  "events": ((body.?states.orValue(null) == null) ? [] : body.states).map(row,
+                    size(row) > 16 && row[0] != null && string(row[0]) != "",
+                    {
+                      "message": {
+                        "icao24": string(row[0]),
+                        "callsign": row[1],
+                        "origin_country": row[2],
+                        "time_position": row[3],
+                        "last_contact": row[4],
+                        "longitude": row[5],
+                        "latitude": row[6],
+                        "baro_altitude": row[7],
+                        "on_ground": row[8],
+                        "velocity": row[9],
+                        "true_track": row[10],
+                        "vertical_rate": row[11],
+                        "sensors": row[12],
+                        "geo_altitude": row[13],
+                        "squawk": row[14],
+                        "spi": row[15],
+                        "position_source": row[16],
+                        "category": (size(row) > 17) ? (row[17]) : null,
+                        "response_time": body.?time.orValue(null),
+                      }.encode_json(),
+                    }
+                  ),
+                  "want_more": false,
+                }
+              )
+            :
+              {
+                "events": {
+                  "error": {
+                    "code": string(resp.StatusCode),
+                    "id": string(resp.Status),
+                    "message": "GET " + path + ": " + ((size(resp.Body) != 0) ? string(resp.Body) : string(resp.Status)),
+                  },
+                },
+                "want_more": false,
+              }
+          )
+        )
+      )
+    )
+  )
+tags:
+{{#if preserve_original_event}}
+  - preserve_original_event
+{{/if}}
+{{#each tags as |tag|}}
+  - {{tag}}
+{{/each}}
+{{#contains "forwarded" tags}}
+publisher_pipeline.disable_host: true
+{{/contains}}
+{{#if processors}}
+processors:
+{{processors}}
+{{/if}}

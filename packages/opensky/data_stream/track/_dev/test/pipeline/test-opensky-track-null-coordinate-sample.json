@@ -1,0 +1,10 @@
+{
+    "events": [
+        {
+            "message": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517228100,\"latitude\":null,\"longitude\":8.2,\"baro_altitude\":null,\"true_track\":275.0,\"on_ground\":false}"
+        },
+        {
+            "message": "{\"icao24\":\"3c4b26\",\"startTime\":1517227200,\"endTime\":1517230800,\"calllsign\":\"DLH789  \",\"time\":1517230800,\"latitude\":51.47,\"longitude\":null,\"baro_altitude\":80.0,\"true_track\":null,\"on_ground\":null}"
+        }
+    ]
+}

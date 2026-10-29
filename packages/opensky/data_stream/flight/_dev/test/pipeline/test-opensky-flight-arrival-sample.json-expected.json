@@ -1,0 +1,51 @@
+{
+    "expected": [
+        {
+            "@timestamp": "2018-01-29T10:00:00.000Z",
+            "ecs": {
+                "version": "9.3.0"
+            },
+            "event": {
+                "category": [
+                    "host"
+                ],
+                "end": "2018-01-29T12:00:00.000Z",
+                "kind": "event",
+                "original": "{\"icao24\":\"3c675a\",\"firstSeen\":1517220000,\"estDepartureAirport\":\"LFPG\",\"lastSeen\":1517227200,\"estArrivalAirport\":\"EDDF\",\"callsign\":\"DLH456  \",\"estDepartureAirportHorizDistance\":1500,\"estDepartureAirportVertDistance\":50,\"estArrivalAirportHorizDistance\":400,\"estArrivalAirportVertDistance\":20,\"departureAirportCandidatesCount\":0,\"arrivalAirportCandidatesCount\":1,\"scope\":\"arrival\"}",
+                "start": "2018-01-29T10:00:00.000Z",
+                "type": [
+                    "info"
+                ]
+            },
+            "host": {
+                "id": "3c675a"
+            },
+            "observer": {
+                "product": "OpenSky REST API",
+                "vendor": "OpenSky Network"
+            },
+            "opensky": {
+                "flight": {
+                    "arrival_airport_candidates_count": 1,
+                    "callsign": "DLH456  ",
+                    "departure_airport_candidates_count": 0,
+                    "est_arrival_airport": "EDDF",
+                    "est_arrival_airport_horiz_distance": 400,
+                    "est_arrival_airport_vert_distance": 20,
+                    "est_departure_airport": "LFPG",
+                    "est_departure_airport_horiz_distance": 1500,
+                    "est_departure_airport_vert_distance": 50,
+                    "scope": "arrival"
+                }
+            },
+            "related": {
+                "hosts": [
+                    "DLH456"
+                ]
+            },
+            "tags": [
+                "preserve_original_event"
+            ]
+        }
+    ]
+}

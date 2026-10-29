@@ -1,0 +1,39 @@
+{
+    "expected": [
+        {
+            "@timestamp": "2016-03-21T12:41:55.000Z",
+            "ecs": {
+                "version": "9.3.0"
+            },
+            "event": {
+                "category": [
+                    "host"
+                ],
+                "kind": "event",
+                "original": "{\"icao24\":\"3e1bf9\",\"callsign\":null,\"origin_country\":\"Italy\",\"time_position\":null,\"last_contact\":1458564115,\"longitude\":null,\"latitude\":null,\"baro_altitude\":null,\"on_ground\":false,\"velocity\":null,\"true_track\":null,\"vertical_rate\":null,\"sensors\":null,\"geo_altitude\":null,\"squawk\":null,\"spi\":false,\"position_source\":0,\"category\":null,\"response_time\":1458564121}",
+                "type": [
+                    "info"
+                ]
+            },
+            "host": {
+                "id": "3e1bf9"
+            },
+            "observer": {
+                "product": "OpenSky REST API",
+                "vendor": "OpenSky Network"
+            },
+            "opensky": {
+                "state_vector": {
+                    "on_ground": false,
+                    "origin_country": "Italy",
+                    "position_source": 0,
+                    "response_time": "2016-03-21T12:42:01.000Z",
+                    "spi": false
+                }
+            },
+            "tags": [
+                "preserve_original_event"
+            ]
+        }
+    ]
+}

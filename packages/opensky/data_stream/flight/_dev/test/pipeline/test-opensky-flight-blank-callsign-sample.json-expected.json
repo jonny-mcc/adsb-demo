@@ -1,0 +1,46 @@
+{
+    "expected": [
+        {
+            "@timestamp": "2018-01-29T12:00:00.000Z",
+            "ecs": {
+                "version": "9.3.0"
+            },
+            "event": {
+                "category": [
+                    "host"
+                ],
+                "end": "2018-01-29T13:00:00.000Z",
+                "kind": "event",
+                "original": "{\"icao24\":\"3c675a\",\"firstSeen\":1517227200,\"estDepartureAirport\":\"EDDF\",\"lastSeen\":1517230800,\"estArrivalAirport\":\"EGLL\",\"callsign\":\"        \",\"estDepartureAirportHorizDistance\":1250,\"estDepartureAirportVertDistance\":40,\"estArrivalAirportHorizDistance\":980,\"estArrivalAirportVertDistance\":30,\"departureAirportCandidatesCount\":1,\"arrivalAirportCandidatesCount\":2,\"scope\":\"departure\"}",
+                "start": "2018-01-29T12:00:00.000Z",
+                "type": [
+                    "info"
+                ]
+            },
+            "host": {
+                "id": "3c675a"
+            },
+            "observer": {
+                "product": "OpenSky REST API",
+                "vendor": "OpenSky Network"
+            },
+            "opensky": {
+                "flight": {
+                    "arrival_airport_candidates_count": 2,
+                    "callsign": "        ",
+                    "departure_airport_candidates_count": 1,
+                    "est_arrival_airport": "EGLL",
+                    "est_arrival_airport_horiz_distance": 980,
+                    "est_arrival_airport_vert_distance": 30,
+                    "est_departure_airport": "EDDF",
+                    "est_departure_airport_horiz_distance": 1250,
+                    "est_departure_airport_vert_distance": 40,
+                    "scope": "departure"
+                }
+            },
+            "tags": [
+                "preserve_original_event"
+            ]
+        }
+    ]
+}

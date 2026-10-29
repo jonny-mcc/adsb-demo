@@ -1,0 +1,264 @@
+---
+description: Parse OpenSky Network flight events.
+processors:
+  - set:
+      field: ecs.version
+      tag: set_ecs_version
+      value: '9.3.0'
+
+  # CEL input only.
+  - remove:
+      field:
+        - organization
+        - division
+        - team
+      ignore_missing: true
+      if: ctx.organization instanceof String && ctx.division instanceof String && ctx.team instanceof String
+      tag: remove_agentless_tags
+      description: >-
+        Removes the fields added by Agentless as metadata,
+        as they can collide with ECS fields.
+  - terminate:
+      tag: data_collection_error
+      if: ctx.error?.message != null && ctx.message == null && ctx.event?.original == null
+      description: error message set and no data to process.
+
+  - rename:
+      field: message
+      tag: rename_message_to_event_original
+      target_field: event.original
+      ignore_missing: true
+      description: Renames the original `message` field to `event.original` to store a copy of the original message. The `event.original` field is not touched if the document already has one; it may happen when Logstash sends the document.
+      if: ctx.event?.original == null
+  - remove:
+      field: message
+      tag: remove_message
+      ignore_missing: true
+      description: The `message` field is no longer required if the document has an `event.original` field.
+      if: ctx.event?.original != null
+
+  - json:
+      field: event.original
+      target_field: json
+      tag: parse_json
+      if: ctx.event?.original != null
+      description: Parse one flight object from event.original.
+
+  - date:
+      field: json.firstSeen
+      target_field: '@timestamp'
+      formats:
+        - UNIX
+      if: ctx.json?.firstSeen != null
+      tag: date_first_seen_timestamp
+      description: Use the flight start as the event timestamp so a late historical row stays on the day it departed.
+  - date:
+      field: json.firstSeen
+      target_field: event.start
+      formats:
+        - UNIX
+      if: ctx.json?.firstSeen != null
+      tag: date_first_seen_start
+      description: Record firstSeen as the start of the flight. Unix seconds.
+  - date:
+      field: json.lastSeen
+      target_field: event.end
+      formats:
+        - UNIX
+      if: ctx.json?.lastSeen != null
+      tag: date_last_seen
+      description: Record lastSeen as the end of the flight. Unix seconds.
+
+  - convert:
+      field: json.estDepartureAirportHorizDistance
+      type: long
+      ignore_missing: true
+      if: ctx.json?.estDepartureAirportHorizDistance != null
+      tag: convert_est_departure_airport_horiz_distance
+  - convert:
+      field: json.estDepartureAirportVertDistance
+      type: long
+      ignore_missing: true
+      if: ctx.json?.estDepartureAirportVertDistance != null
+      tag: convert_est_departure_airport_vert_distance
+  - convert:
+      field: json.estArrivalAirportHorizDistance
+      type: long
+      ignore_missing: true
+      if: ctx.json?.estArrivalAirportHorizDistance != null
+      tag: convert_est_arrival_airport_horiz_distance
+  - convert:
+      field: json.estArrivalAirportVertDistance
+      type: long
+      ignore_missing: true
+      if: ctx.json?.estArrivalAirportVertDistance != null
+      tag: convert_est_arrival_airport_vert_distance
+  - convert:
+      field: json.departureAirportCandidatesCount
+      type: long
+      ignore_missing: true
+      if: ctx.json?.departureAirportCandidatesCount != null
+      tag: convert_departure_airport_candidates_count
+  - convert:
+      field: json.arrivalAirportCandidatesCount
+      type: long
+      ignore_missing: true
+      if: ctx.json?.arrivalAirportCandidatesCount != null
+      tag: convert_arrival_airport_candidates_count
+
+  - set:
+      field: _temp.callsign
+      copy_from: json.callsign
+      if: ctx.json?.callsign instanceof String
+      tag: copy_callsign_for_trim
+      description: Copy the callsign so padding can be removed for related.hosts without changing the stored value.
+  - trim:
+      field: _temp.callsign
+      ignore_missing: true
+      if: ctx._temp?.callsign instanceof String
+      tag: trim_callsign
+      description: Remove the padding spaces OpenSky adds to callsigns.
+  - append:
+      field: related.hosts
+      value: '{{{_temp.callsign}}}'
+      allow_duplicates: false
+      if: "ctx._temp?.callsign instanceof String && ctx._temp.callsign != ''"
+      tag: append_related_hosts
+      description: Record the trimmed callsign for host pivots. An empty result is not a host.
+  - remove:
+      field: _temp
+      ignore_missing: true
+      tag: remove_temp
+      description: Remove the temporary callsign copy.
+
+  - rename:
+      field: json.icao24
+      target_field: host.id
+      ignore_missing: true
+      if: ctx.json?.icao24 != null
+      tag: rename_icao24_to_host_id
+      description: Move the transponder address to host.id. It is not stored again under opensky.flight.
+  - rename:
+      field: json.callsign
+      target_field: opensky.flight.callsign
+      ignore_missing: true
+      if: ctx.json?.callsign != null
+      tag: rename_callsign
+      description: Keep the callsign, including its padding. A null callsign is omitted.
+  - rename:
+      field: json.estDepartureAirport
+      target_field: opensky.flight.est_departure_airport
+      ignore_missing: true
+      if: ctx.json?.estDepartureAirport != null
+      tag: rename_est_departure_airport
+      description: Move the estimated departure airport. A null code is omitted.
+  - rename:
+      field: json.estArrivalAirport
+      target_field: opensky.flight.est_arrival_airport
+      ignore_missing: true
+      if: ctx.json?.estArrivalAirport != null
+      tag: rename_est_arrival_airport
+      description: Move the estimated arrival airport. A null code is omitted.
+  - rename:
+      field: json.estDepartureAirportHorizDistance
+      target_field: opensky.flight.est_departure_airport_horiz_distance
+      ignore_missing: true
+      if: ctx.json?.estDepartureAirportHorizDistance != null
+      tag: rename_est_departure_airport_horiz_distance
+  - rename:
+      field: json.estDepartureAirportVertDistance
+      target_field: opensky.flight.est_departure_airport_vert_distance
+      ignore_missing: true
+      if: ctx.json?.estDepartureAirportVertDistance != null
+      tag: rename_est_departure_airport_vert_distance
+  - rename:
+      field: json.estArrivalAirportHorizDistance
+      target_field: opensky.flight.est_arrival_airport_horiz_distance
+      ignore_missing: true
+      if: ctx.json?.estArrivalAirportHorizDistance != null
+      tag: rename_est_arrival_airport_horiz_distance
+  - rename:
+      field: json.estArrivalAirportVertDistance
+      target_field: opensky.flight.est_arrival_airport_vert_distance
+      ignore_missing: true
+      if: ctx.json?.estArrivalAirportVertDistance != null
+      tag: rename_est_arrival_airport_vert_distance
+  - rename:
+      field: json.departureAirportCandidatesCount
+      target_field: opensky.flight.departure_airport_candidates_count
+      ignore_missing: true
+      if: ctx.json?.departureAirportCandidatesCount != null
+      tag: rename_departure_airport_candidates_count
+  - rename:
+      field: json.arrivalAirportCandidatesCount
+      target_field: opensky.flight.arrival_airport_candidates_count
+      ignore_missing: true
+      if: ctx.json?.arrivalAirportCandidatesCount != null
+      tag: rename_arrival_airport_candidates_count
+  - rename:
+      field: json.scope
+      target_field: opensky.flight.scope
+      ignore_missing: true
+      if: ctx.json?.scope != null
+      tag: rename_scope
+      description: Move the collector scope. The API object does not include this value.
+
+  - set:
+      field: observer.vendor
+      tag: set_observer_vendor
+      value: OpenSky Network
+      if: ctx.json instanceof Map
+  - set:
+      field: observer.product
+      tag: set_observer_product
+      value: OpenSky REST API
+      if: ctx.json instanceof Map
+  - set:
+      field: event.kind
+      tag: set_event_kind
+      value: event
+      if: ctx.json instanceof Map
+  - append:
+      field: event.category
+      tag: append_event_category
+      value: host
+      allow_duplicates: false
+      if: ctx.json instanceof Map
+  - append:
+      field: event.type
+      tag: append_event_type
+      value: info
+      allow_duplicates: false
+      if: ctx.json instanceof Map
+
+  - remove:
+      field: json
+      ignore_missing: true
+      tag: remove_json
+      description: Drop the parsed object after its values have been moved.
+
+  - append:
+      field: tags
+      value: preserve_original_event
+      allow_duplicates: false
+      if: ctx.error?.message != null
+      tag: append_preserve_original_event_on_error
+      description: Keep the original event when the collector recorded an error.
+
+on_failure:
+  - append:
+      field: error.message
+      tag: append_pipeline_error_message
+      value: >-
+        Processor '{{{ _ingest.on_failure_processor_type }}}'
+        {{{#_ingest.on_failure_processor_tag}}}with tag '{{{ _ingest.on_failure_processor_tag }}}'
+        {{{/_ingest.on_failure_processor_tag}}}failed with message '{{{ _ingest.on_failure_message }}}'
+  - set:
+      field: event.kind
+      tag: set_pipeline_error_to_event_kind
+      value: pipeline_error
+  - append:
+      field: tags
+      tag: append_preserve_original_event
+      value: preserve_original_event
+      allow_duplicates: false
