@@ -37,9 +37,9 @@ jq -e '
 if [[ "${INGEST_ENGINE:-agent}" == "opensky_integration" ]]; then
   opensky_stream="${OPENSKY_INTEGRATION_DATA_STREAM:-logs-opensky.state_vector-default}"
   opensky_namespace="${opensky_stream#logs-opensky.state_vector-}"
-  alias_definition=$(es_curl "$BASE/_data_stream/_alias/demos-aircraft-adsb")
-  jq -e --arg stream "$opensky_stream" '
-    .data_streams | length == 1 and .[0].name == $stream
+  alias_definition=$(es_curl "$BASE/_alias/demos-aircraft-adsb")
+  jq -e --arg stream "$opensky_stream" --arg alias "demos-aircraft-adsb" '
+    keys == [$stream] and .[$stream].aliases[$alias] != null
   ' <<< "$alias_definition" >/dev/null
 
   es_curl "$BASE/_ingest/pipeline/demo-aircraft-adsb.opensky-compat" >/dev/null

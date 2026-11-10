@@ -229,6 +229,8 @@ def validate_opensky_integration_mode() -> None:
     assert "logs-opensky.state_vector@custom" in setup
     assert "demo-aircraft-adsb.opensky-compat" in setup
     assert '"$BASE/_data_stream/_modify"' in setup
+    assert '"$BASE/_alias/$canonical_alias"' in setup
+    assert "_data_stream/_alias" not in setup
     assert 'INGEST_ENGINE:-agent}" == "opensky_integration"' in setup
     assert (
         '--arg condition "ctx.data_stream?.namespace == '
@@ -239,6 +241,10 @@ def validate_opensky_integration_mode() -> None:
     )
     assert "prepare_local_ingest_target" in setup
     assert "{remove: {data_stream: $stream, alias: $alias}}" in setup
+    assert (
+        '{"name": "adsb-automation-session", "owner": true}'
+        in setup
+    )
 
     env_example = (ROOT / ".env.example").read_text()
     assert "OPENSKY_INTEGRATION_DATA_STREAM=logs-opensky.state_vector-default" in (

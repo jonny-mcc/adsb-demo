@@ -309,7 +309,7 @@ setup_serviceuser() {
     -u "${svc_user}:${svc_pass}" \
     -X DELETE "$BASE/_security/api_key" \
     -H "Content-Type: application/json" \
-    -d '{"name": "adsb-automation-session"}')
+    -d '{"name": "adsb-automation-session", "owner": true}')
   if [[ "$invalidate_http" -lt 200 || "$invalidate_http" -ge 300 ]]; then
     echo "  WARNING (HTTP $invalidate_http): Could not invalidate the previous automation session key." >&2
     cat "$invalidate_tmp" >&2
@@ -825,10 +825,10 @@ setup_opensky_integration_compat() {
   alias_tmp=$(mktemp)
   alias_http=$(curl -s -w '%{http_code}' -o "$alias_tmp" \
     -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    "$BASE/_data_stream/_alias/$canonical_alias")
+    "$BASE/_alias/$canonical_alias")
   if [[ "$alias_http" == "200" ]]; then
-    if ! jq -e --arg stream "$data_stream" '
-      .data_streams | length == 1 and .[0].name == $stream
+    if ! jq -e --arg stream "$data_stream" --arg alias "$canonical_alias" '
+      keys == [$stream] and .[$stream].aliases[$alias] != null
     ' "$alias_tmp" >/dev/null; then
       echo "  FAILED: data stream alias '$canonical_alias' must target only '$data_stream'." >&2
       cat "$alias_tmp" >&2
@@ -961,7 +961,7 @@ prepare_local_ingest_target() {
   alias_tmp=$(mktemp)
   alias_http=$(curl -s -w '%{http_code}' -o "$alias_tmp" \
     -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    "$BASE/_data_stream/_alias/$canonical_alias")
+    "$BASE/_alias/$canonical_alias")
 
   if [[ "$alias_http" == "404" ]]; then
     rm -f "$alias_tmp"
@@ -974,8 +974,13 @@ prepare_local_ingest_target() {
     exit 1
   fi
 
-  alias_stream=$(jq -r '
-    if (.data_streams | length) == 1 then .data_streams[0].name else empty end
+  alias_stream=$(jq -r --arg alias "$canonical_alias" '
+    [
+      to_entries[]
+      | select(.value.aliases[$alias] != null)
+      | .key
+    ]
+    | if length == 1 then .[0] else empty end
   ' "$alias_tmp")
   rm -f "$alias_tmp"
   if [[ "$alias_stream" != logs-opensky.state_vector-* ]]; then
