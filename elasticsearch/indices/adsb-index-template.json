@@ -4,9 +4,6 @@
       "settings": {
         "index": {
           "mode": "time_series",
-          "lifecycle": {
-            "name": "adsb-lifecycle"
-          },
           "default_pipeline": "demo-aircraft-adsb.opensky",
           "mapping": {
             "source": {
@@ -35,6 +32,9 @@
           },
           "icao24": {
             "time_series_dimension": true,
+            "type": "keyword"
+          },
+          "ingest_quadrant": {
             "type": "keyword"
           },
           "latitude": {
@@ -100,6 +100,34 @@
           "longitude": {
             "type": "float"
           },
+          "tags": {
+            "type": "keyword"
+          },
+          "error": {
+            "properties": {
+              "enrich": {
+                "properties": {
+                  "country": { "type": "keyword", "ignore_above": 1024 },
+                  "airport": { "type": "keyword", "ignore_above": 1024 }
+                }
+              }
+            }
+          },
+          "geo": {
+            "properties": {
+              "ADM0_A3":    { "type": "keyword" },
+              "ADMIN":      { "type": "keyword" },
+              "BRK_A3":     { "type": "keyword" },
+              "CONTINENT":  { "type": "keyword" },
+              "ISO_A3":     { "type": "keyword" },
+              "NAME":       { "type": "keyword" },
+              "NAME_LONG":  { "type": "keyword" },
+              "REGION_UN":  { "type": "keyword" },
+              "REGION_WB":  { "type": "keyword" },
+              "SOVEREIGNT": { "type": "keyword" },
+              "SUBREGION":  { "type": "keyword" }
+            }
+          },
           "airport": {
             "properties": {
               "name":      { "type": "keyword" },
@@ -113,7 +141,8 @@
                 }
               },
               "wikipedia": { "type": "keyword" },
-              "activity":  { "type": "keyword" }
+              "activity":  { "type": "keyword" },
+              "match_type": { "type": "keyword" }
             }
           }
         }
@@ -124,7 +153,7 @@
       }
     },
     "composed_of": [],
-    "version": 2,
+    "version": 3,
     "data_stream": {
       "hidden": false,
       "allow_custom_routing": false

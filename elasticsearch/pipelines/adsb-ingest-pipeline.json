@@ -2,20 +2,55 @@
   "processors": [
     {
       "enrich": {
-        "ignore_failure": true,
         "policy_name": "opensky-geo-enrich-50m",
         "ignore_missing": true,
         "field": "location",
-        "target_field": "geo"
+        "target_field": "geo",
+        "on_failure": [
+          {
+            "append": {
+              "field": "tags",
+              "value": "adsb_country_enrich_failure",
+              "allow_duplicates": false
+            }
+          },
+          {
+            "set": {
+              "field": "error.enrich.country",
+              "value": "{{ _ingest.on_failure_message }}"
+            }
+          }
+        ]
       }
     },
     {
       "enrich": {
-        "ignore_failure": true,
         "policy_name": "adsb-airport-proximity",
         "ignore_missing": true,
         "field": "location",
-        "target_field": "airport"
+        "target_field": "airport",
+        "on_failure": [
+          {
+            "append": {
+              "field": "tags",
+              "value": "adsb_airport_enrich_failure",
+              "allow_duplicates": false
+            }
+          },
+          {
+            "set": {
+              "field": "error.enrich.airport",
+              "value": "{{ _ingest.on_failure_message }}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "set": {
+        "if": "ctx.airport != null",
+        "field": "airport.match_type",
+        "value": "coverage_zone"
       }
     },
     {

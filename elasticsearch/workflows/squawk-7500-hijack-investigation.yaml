@@ -1,14 +1,9 @@
+version: "1"
 name: Squawk 7500 Hijack Investigation
 description: >-
   Alert-triggered investigation workflow for squawk 7500 (hijack) signals.
-  Runs once per aircraft via ES|QL per-row alert grouping. Deduplicates
-  against open cases using a composite icao24:callsign tag, creates a
-  Kibana case with attached alert, enriches with flight history and
-  external data (adsbdb aircraft/route, adsb.lol live position, GNews
-  news search), invokes the hijack assessment agent for AI-powered
-  false-positive analysis, and tags the case with the AI triage
-  assessment — Slack notification for genuine threats, human review
-  for false positives.
+  Deduplicates active investigations by ICAO24, enriches new cases, obtains a
+  structured AI assessment, and notifies Slack for genuine threats.
 enabled: true
 tags: ["adsb", "squawk-7500", "hijack", "alert", "ai", "cases"]
 
@@ -20,51 +15,47 @@ triggers:
   - type: alert
 
 steps:
-  # ------------------------------------------------------------------
-  # 0. Dedup — check for an existing open case for this aircraft.
-  #    Alert grouping fields come from the ES|QL KEEP clause:
-  #      event.alerts[0].kibana.alert.grouping.{icao24, callsign, …}
-  # ------------------------------------------------------------------
-  - name: find_existing_case
-    type: kibana.request
+  # Fetch the latest complete source document before branching so both new and
+  # existing cases receive the same deterministic observation.
+  - name: fetch_latest_enriched_doc
+    type: elasticsearch.search
     with:
-      method: GET
-      path: "__SPACE_PREFIX__/api/cases/_find?tags=icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}&status=open&perPage=1"
+      index: "{{ consts.indexName }}"
+      query:
+        bool:
+          filter:
+            - term:
+                icao24: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
+            - range:
+                "@timestamp":
+                  gte: "now-10m"
+      sort:
+        - "@timestamp":
+            order: desc
+        - "_id":
+            order: desc
+      size: 1
+
+  - name: find_existing_case
+    type: cases.findCases
+    with:
+      owner: observability
+      status: open
+      tags:
+        - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
+      sortField: updatedAt
+      sortOrder: desc
+      page: 1
+      perPage: 1
 
   - name: new_aircraft_only
     type: if
-    condition: "${{ steps.find_existing_case.output.total == 0 }}"
+    condition: "steps.find_existing_case.output.total : 0"
     steps:
-      # ----------------------------------------------------------------
-      # 1. Fetch the full enriched document for fields not in the
-      #    ES|QL KEEP clause (geo.*, airport.*).
-      # ----------------------------------------------------------------
-      - name: fetch_enriched_doc
-        type: elasticsearch.search
-        with:
-          index: "demos-aircraft-adsb"
-          query:
-            bool:
-              filter:
-                - term:
-                    icao24: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                - range:
-                    "@timestamp":
-                      gte: "now-10m"
-          size: 1
-
-      # ----------------------------------------------------------------
-      # 2. Create case for this aircraft
-      # ----------------------------------------------------------------
       - name: create_case
-        type: kibana.createCase
+        type: cases.createCase
         with:
           owner: observability
-          connector:
-            id: "none"
-            name: "none"
-            type: ".none"
-            fields: null
           settings:
             syncAlerts: true
           title: >-
@@ -82,13 +73,13 @@ steps:
             *Altitude:* {{ event.alerts[0].kibana.alert.grouping.baro_altitude }}m
             *Velocity:* {{ event.alerts[0].kibana.alert.grouping.velocity }} m/s
             *On ground:* {{ event.alerts[0].kibana.alert.grouping.on_ground }}
-            *Region:* {{ steps.fetch_enriched_doc.output.hits.hits[0]._source.geo.NAME | default: "unknown" }}, {{ steps.fetch_enriched_doc.output.hits.hits[0]._source.geo.SUBREGION | default: "unknown" }}
+            *Region:* {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.geo.NAME | default: "unknown" }}, {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.geo.SUBREGION | default: "unknown" }}
+            *Airport coverage zone:* {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.airport.name | default: "unknown" }} ({{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.airport.iata_code | default: "?" }})
             *Dashboard:* __KB_ENDPOINT__/app/dashboards#/view/__DASHBOARD_AIRCRAFT_DETAIL_ID__?_g=(time:(from:now-6h,to:now))&_a=(filters:!((query:(match_phrase:(icao24:'{{ event.alerts[0].kibana.alert.grouping.icao24 }}')))))
           tags:
             - "squawk-7500"
             - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
             - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-            - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
             - "auto-investigation"
           customFields:
             - key: icao24
@@ -103,33 +94,29 @@ steps:
             - key: confidence
               type: text
               value: null
+          extended_fields:
+            icao24_as_keyword: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
+            callsign_as_keyword: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
+            triage_assessment_as_keyword: "pending"
+            confidence_as_keyword: "pending"
 
-      # ----------------------------------------------------------------
-      # 3. Attach the triggering alert to the case
-      # ----------------------------------------------------------------
       - name: attach_alert
-        type: kibana.request
+        type: cases.addAlerts
         with:
-          method: POST
-          path: "__SPACE_PREFIX__/api/cases/{{ steps.create_case.output.id }}/comments"
-          body:
-            type: alert
-            alertId: "{{ event.alerts[0]._id }}"
-            index: "{{ event.alerts[0]._index }}"
-            owner: observability
-            rule:
-              id: "{{ event.rule.id }}"
-              name: "{{ event.rule.name }}"
+          case_id: "{{ steps.create_case.output.case.id }}"
+          alerts:
+            - alertId: "{{ event.alerts[0]._id }}"
+              index: "{{ event.alerts[0]._index }}"
+              rule:
+                id: "{{ event.rule.id }}"
+                name: "{{ event.rule.name }}"
         on-failure:
           continue: true
 
-      # ----------------------------------------------------------------
-      # 4. Enrich — 6-hour flight history
-      # ----------------------------------------------------------------
       - name: flight_history
         type: elasticsearch.search
         with:
-          index: "demos-aircraft-adsb"
+          index: "{{ consts.indexName }}"
           query:
             bool:
               filter:
@@ -138,11 +125,13 @@ steps:
                 - range:
                     "@timestamp":
                       gte: "{{ consts.historyWindow }}"
+          sort:
+            - "@timestamp":
+                order: desc
+            - "_id":
+                order: desc
           size: 200
 
-      # ----------------------------------------------------------------
-      # 5a. Correlate — adsbdb aircraft metadata (always runs)
-      # ----------------------------------------------------------------
       - name: adsbdb_aircraft
         type: http
         with:
@@ -151,12 +140,9 @@ steps:
         on-failure:
           continue: true
 
-      # ----------------------------------------------------------------
-      # 5b. Correlate — adsbdb expected route (only when callsign known)
-      # ----------------------------------------------------------------
       - name: has_callsign
         type: if
-        condition: "${{ event.alerts[0].kibana.alert.grouping.callsign != '' }}"
+        condition: "event.alerts[0].kibana.alert.grouping.callsign : *"
         steps:
           - name: adsbdb_route
             type: http
@@ -166,9 +152,6 @@ steps:
             on-failure:
               continue: true
 
-      # ----------------------------------------------------------------
-      # 6. Correlate — adsb.lol live position cross-reference
-      # ----------------------------------------------------------------
       - name: adsblol_lookup
         type: http
         with:
@@ -177,9 +160,7 @@ steps:
         on-failure:
           continue: true
 
-      # ----------------------------------------------------------------
-      # 7. Correlate — GNews news search (optional)
-      # ----------------------------------------------------------------
+      # setup.sh routes this request through a connector with encrypted secrets.
       - name: news_search
         type: http
         with:
@@ -188,26 +169,14 @@ steps:
         on-failure:
           continue: true
 
-      # ----------------------------------------------------------------
-      # 8. AI assessment — invoke the hijack assessment agent
-      # ----------------------------------------------------------------
       - name: ai_assessment
         type: ai.agent
+        agent-id: "adsb_hijack_assessment_agent"
         with:
-          agent_id: "adsb_hijack_assessment_agent"
           message: |
             Assess whether this squawk 7500 signal is genuine or a false positive.
-            All enrichment data is provided below — do NOT call the enrichment
-            workflow tool; assess directly from this data.
-
-            Format your response using the structured output format from your
-            instructions (title line, AI Triage Assessment, Confidence,
-            Reasoning with key-evidence bullets). The workflow parses the
-            "**AI Triage Assessment:**" line for routing, so it must read
-            exactly:
-              **AI Triage Assessment:** `genuine`
-            or
-              **AI Triage Assessment:** `false_positive`
+            Use only the supplied enrichment data and return the requested
+            structured output.
 
             === TRIGGERING EVENT ===
             ICAO24: {{ event.alerts[0].kibana.alert.grouping.icao24 }}
@@ -219,8 +188,8 @@ steps:
             Heading: {{ event.alerts[0].kibana.alert.grouping.true_track }}°
             Vertical rate: {{ event.alerts[0].kibana.alert.grouping.vertical_rate }} m/s
             On ground: {{ event.alerts[0].kibana.alert.grouping.on_ground }}
-            Nearest airport: {{ steps.fetch_enriched_doc.output.hits.hits[0]._source.airport.name | default: "unknown" }} ({{ steps.fetch_enriched_doc.output.hits.hits[0]._source.airport.iata_code | default: "?" }}, {{ steps.fetch_enriched_doc.output.hits.hits[0]._source.airport.activity | default: "?" }})
-            Region: {{ steps.fetch_enriched_doc.output.hits.hits[0]._source.geo.NAME | default: "unknown" }}, {{ steps.fetch_enriched_doc.output.hits.hits[0]._source.geo.SUBREGION | default: "unknown" }} ({{ steps.fetch_enriched_doc.output.hits.hits[0]._source.geo.CONTINENT | default: "unknown" }})
+            Airport coverage zone: {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.airport.name | default: "unknown" }} ({{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.airport.iata_code | default: "?" }}, {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.airport.activity | default: "?" }})
+            Region: {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.geo.NAME | default: "unknown" }}, {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.geo.SUBREGION | default: "unknown" }} ({{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.geo.CONTINENT | default: "unknown" }})
 
             === FLIGHT HISTORY (last 6 hours, {{ steps.flight_history.output.hits.total.value }} data points) ===
             {{ steps.flight_history.output.hits.hits | json:2 }}
@@ -236,153 +205,88 @@ steps:
 
             === NEWS SEARCH (GNews — empty if API key not configured) ===
             {{ steps.news_search.output | json:2 }}
+          schema:
+            type: object
+            properties:
+              triage_assessment:
+                type: string
+                enum: [genuine, false_positive]
+              confidence:
+                type: string
+                enum: [low, medium, high]
+              reasoning:
+                type: string
+              key_evidence:
+                type: array
+                items:
+                  type: string
+            required:
+              - triage_assessment
+              - confidence
+              - reasoning
+              - key_evidence
 
-      # ----------------------------------------------------------------
-      # 9. Update case with AI assessment and enrichment summary
-      # ----------------------------------------------------------------
       - name: update_case_enrichment
-        type: kibana.request
+        type: cases.addComment
         with:
-          method: POST
-          path: "__SPACE_PREFIX__/api/cases/{{ steps.create_case.output.id }}/comments"
-          body:
-            type: user
-            owner: observability
-            comment: |
-              {{ steps.ai_assessment.output.message }}
+          case_id: "{{ steps.create_case.output.case.id }}"
+          comment: |
+            **AI Triage Assessment:** `{{ steps.ai_assessment.output.structured_output.triage_assessment }}`
+            **Confidence:** `{{ steps.ai_assessment.output.structured_output.confidence }}`
 
-              ---
+            {{ steps.ai_assessment.output.structured_output.reasoning }}
 
-              **Data sources consulted:**
-              - Flight history: {{ steps.flight_history.output.hits.total.value }} data points (last 6 hours)
-              - Aircraft registry (adsbdb): {{ steps.adsbdb_aircraft.output.data.response.aircraft.type | default: "unavailable" }} — {{ steps.adsbdb_aircraft.output.data.response.aircraft.registered_owner | default: "unknown" }}
-              - Expected route (adsbdb): {{ steps.adsbdb_route.output.data.response.flightroute.origin.iata_code | default: "?" }} → {{ steps.adsbdb_route.output.data.response.flightroute.destination.iata_code | default: "?" }}
-              - Live tracking (adsb.lol): cross-referenced
-              - News search (GNews): consulted
+            **Key evidence:**
+            {{ steps.ai_assessment.output.structured_output.key_evidence | json:2 }}
 
-              :bar_chart: [Aircraft Detail Dashboard](<__KB_ENDPOINT__/app/dashboards#/view/__DASHBOARD_AIRCRAFT_DETAIL_ID__?_g=(time:(from:now-6h,to:now))&_a=(filters:!((query:(match_phrase:(icao24:'{{ event.alerts[0].kibana.alert.grouping.icao24 }}')))))>)
+            ---
 
-      # ----------------------------------------------------------------
-      # 10. Re-fetch case for current version (after comment changed it)
-      # ----------------------------------------------------------------
-      - name: refetch_case
-        type: kibana.request
+            **Data sources consulted:**
+            - Flight history: {{ steps.flight_history.output.hits.total.value }} data points (last 6 hours)
+            - Aircraft registry (adsbdb): {{ steps.adsbdb_aircraft.output.data.response.aircraft.type | default: "unavailable" }} — {{ steps.adsbdb_aircraft.output.data.response.aircraft.registered_owner | default: "unknown" }}
+            - Expected route (adsbdb): {{ steps.adsbdb_route.output.data.response.flightroute.origin.iata_code | default: "?" }} → {{ steps.adsbdb_route.output.data.response.flightroute.destination.iata_code | default: "?" }}
+            - Live tracking (adsb.lol): cross-referenced
+            - News search (GNews): consulted
+
+            :bar_chart: [Aircraft Detail Dashboard](<__KB_ENDPOINT__/app/dashboards#/view/__DASHBOARD_AIRCRAFT_DETAIL_ID__?_g=(time:(from:now-6h,to:now))&_a=(filters:!((query:(match_phrase:(icao24:'{{ event.alerts[0].kibana.alert.grouping.icao24 }}')))))>)
+
+      - name: update_case_triage
+        type: cases.updateCase
         with:
-          method: GET
-          path: "__SPACE_PREFIX__/api/cases/{{ steps.create_case.output.id }}"
+          case_id: "{{ steps.create_case.output.case.id }}"
+          updates:
+            status: in-progress
+            severity: "{{ steps.ai_assessment.output.structured_output.confidence }}"
+            category: "Hijack Triage"
+            tags:
+              - "squawk-7500"
+              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
+              - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
+              - "auto-investigation"
+              - "triage:{{ steps.ai_assessment.output.structured_output.triage_assessment }}"
+            customFields:
+              - key: icao24
+                type: text
+                value: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
+              - key: callsign
+                type: text
+                value: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
+              - key: ai_triage_assessment
+                type: text
+                value: "{{ steps.ai_assessment.output.structured_output.triage_assessment }}"
+              - key: confidence
+                type: text
+                value: "{{ steps.ai_assessment.output.structured_output.confidence }}"
+            extended_fields:
+              icao24_as_keyword: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
+              callsign_as_keyword: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
+              triage_assessment_as_keyword: "{{ steps.ai_assessment.output.structured_output.triage_assessment }}"
+              confidence_as_keyword: "{{ steps.ai_assessment.output.structured_output.confidence }}"
 
-      # ----------------------------------------------------------------
-      # 11. Route — Slack for genuine, tag for false positive
-      #     Cases are never auto-closed; a human reviews and closes.
-      #
-      #     Confidence is extracted via nested contains checks because
-      #     ai.agent output is an object {message: string} from 9.4.2+.
-      #     Access via steps.ai_assessment.output.message for string ops.
-      #     Matches **Confidence:** `high` / `medium`, else defaults
-      #     to low. PATCH replaces the entire customFields array, so
-      #     all fields must be included in every PATCH body.
-      # ----------------------------------------------------------------
       - name: route_triage
         type: if
-        condition: "${{ steps.ai_assessment.output.message contains '**AI Triage Assessment:** `genuine`' }}"
+        condition: "steps.ai_assessment.output.structured_output.triage_assessment : genuine"
         steps:
-          - name: confidence_genuine
-            type: if
-            condition: "${{ steps.ai_assessment.output.message contains '**Confidence:** `high`' }}"
-            steps:
-              - name: tag_genuine_high
-                type: kibana.request
-                with:
-                  method: PATCH
-                  path: "__SPACE_PREFIX__/api/cases"
-                  body:
-                    cases:
-                      - id: "{{ steps.create_case.output.id }}"
-                        version: "{{ steps.refetch_case.output.version }}"
-                        tags:
-                          - "squawk-7500"
-                          - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                          - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                          - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                          - "auto-investigation"
-                          - "triage:genuine"
-                        customFields:
-                          - key: icao24
-                            type: text
-                            value: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                          - key: callsign
-                            type: text
-                            value: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                          - key: ai_triage_assessment
-                            type: text
-                            value: "genuine"
-                          - key: confidence
-                            type: text
-                            value: "high"
-            else:
-              - name: confidence_genuine_not_high
-                type: if
-                condition: "${{ steps.ai_assessment.output.message contains '**Confidence:** `medium`' }}"
-                steps:
-                  - name: tag_genuine_medium
-                    type: kibana.request
-                    with:
-                      method: PATCH
-                      path: "__SPACE_PREFIX__/api/cases"
-                      body:
-                        cases:
-                          - id: "{{ steps.create_case.output.id }}"
-                            version: "{{ steps.refetch_case.output.version }}"
-                            tags:
-                              - "squawk-7500"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "auto-investigation"
-                              - "triage:genuine"
-                            customFields:
-                              - key: icao24
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - key: callsign
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - key: ai_triage_assessment
-                                type: text
-                                value: "genuine"
-                              - key: confidence
-                                type: text
-                                value: "medium"
-                else:
-                  - name: tag_genuine_low
-                    type: kibana.request
-                    with:
-                      method: PATCH
-                      path: "__SPACE_PREFIX__/api/cases"
-                      body:
-                        cases:
-                          - id: "{{ steps.create_case.output.id }}"
-                            version: "{{ steps.refetch_case.output.version }}"
-                            tags:
-                              - "squawk-7500"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "auto-investigation"
-                              - "triage:genuine"
-                            customFields:
-                              - key: icao24
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - key: callsign
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - key: ai_triage_assessment
-                                type: text
-                                value: "genuine"
-                              - key: confidence
-                                type: text
-                                value: "low"
           - name: notify_slack
             type: slack
             connector-id: "__SLACK_CONNECTOR_ID__"
@@ -396,107 +300,26 @@ steps:
                 *Position:* {{ event.alerts[0].kibana.alert.grouping.latitude }}, {{ event.alerts[0].kibana.alert.grouping.longitude }}
                 *Altitude:* {{ event.alerts[0].kibana.alert.grouping.baro_altitude }}m
 
-                {{ steps.ai_assessment.output.message }}
+                *Assessment:* {{ steps.ai_assessment.output.structured_output.triage_assessment }}
+                *Confidence:* {{ steps.ai_assessment.output.structured_output.confidence }}
+                *Reasoning:* {{ steps.ai_assessment.output.structured_output.reasoning }}
 
-                :open_file_folder: <__KB_ENDPOINT__/app/observability/cases/{{ steps.create_case.output.id }}|Open Case>
+                :open_file_folder: <__KB_ENDPOINT__/app/observability/cases/{{ steps.create_case.output.case.id }}|Open Case>
                 :bar_chart: <__KB_ENDPOINT__/app/dashboards#/view/__DASHBOARD_AIRCRAFT_DETAIL_ID__?_g=(time:(from:now-6h,to:now))&_a=(filters:!((query:(match_phrase:(icao24:'{{ event.alerts[0].kibana.alert.grouping.icao24 }}')))))|Aircraft Detail Dashboard>
             on-failure:
               continue: true
-        else:
-          - name: confidence_fp
-            type: if
-            condition: "${{ steps.ai_assessment.output.message contains '**Confidence:** `high`' }}"
-            steps:
-              - name: tag_fp_high
-                type: kibana.request
-                with:
-                  method: PATCH
-                  path: "__SPACE_PREFIX__/api/cases"
-                  body:
-                    cases:
-                      - id: "{{ steps.create_case.output.id }}"
-                        version: "{{ steps.refetch_case.output.version }}"
-                        tags:
-                          - "squawk-7500"
-                          - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                          - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                          - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                          - "auto-investigation"
-                          - "triage:false_positive"
-                        customFields:
-                          - key: icao24
-                            type: text
-                            value: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                          - key: callsign
-                            type: text
-                            value: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                          - key: ai_triage_assessment
-                            type: text
-                            value: "false_positive"
-                          - key: confidence
-                            type: text
-                            value: "high"
-            else:
-              - name: confidence_fp_not_high
-                type: if
-                condition: "${{ steps.ai_assessment.output.message contains '**Confidence:** `medium`' }}"
-                steps:
-                  - name: tag_fp_medium
-                    type: kibana.request
-                    with:
-                      method: PATCH
-                      path: "__SPACE_PREFIX__/api/cases"
-                      body:
-                        cases:
-                          - id: "{{ steps.create_case.output.id }}"
-                            version: "{{ steps.refetch_case.output.version }}"
-                            tags:
-                              - "squawk-7500"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "auto-investigation"
-                              - "triage:false_positive"
-                            customFields:
-                              - key: icao24
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - key: callsign
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - key: ai_triage_assessment
-                                type: text
-                                value: "false_positive"
-                              - key: confidence
-                                type: text
-                                value: "medium"
-                else:
-                  - name: tag_fp_low
-                    type: kibana.request
-                    with:
-                      method: PATCH
-                      path: "__SPACE_PREFIX__/api/cases"
-                      body:
-                        cases:
-                          - id: "{{ steps.create_case.output.id }}"
-                            version: "{{ steps.refetch_case.output.version }}"
-                            tags:
-                              - "squawk-7500"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - "callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "icao24:{{ event.alerts[0].kibana.alert.grouping.icao24 }}:callsign:{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - "auto-investigation"
-                              - "triage:false_positive"
-                            customFields:
-                              - key: icao24
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.icao24 }}"
-                              - key: callsign
-                                type: text
-                                value: "{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-                              - key: ai_triage_assessment
-                                type: text
-                                value: "false_positive"
-                              - key: confidence
-                                type: text
-                                value: "low"
+    else:
+      - name: comment_existing_case
+        type: cases.addComment
+        with:
+          case_id: "{{ steps.find_existing_case.output.cases[0].id }}"
+          comment: |
+            A new squawk 7500 alert was received for this aircraft.
+
+            *Observed:* {{ execution.startedAt }}
+            *Callsign:* {{ event.alerts[0].kibana.alert.grouping.callsign }}
+            *Position:* {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.latitude | default: event.alerts[0].kibana.alert.grouping.latitude }}, {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.longitude | default: event.alerts[0].kibana.alert.grouping.longitude }}
+            *Altitude:* {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.baro_altitude | default: event.alerts[0].kibana.alert.grouping.baro_altitude }}m
+            *Velocity:* {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.velocity | default: event.alerts[0].kibana.alert.grouping.velocity }} m/s
+            *Airport coverage zone:* {{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.airport.name | default: "unknown" }} ({{ steps.fetch_latest_enriched_doc.output.hits.hits[0]._source.airport.iata_code | default: "?" }})
+            *Alert ID:* {{ event.alerts[0]._id }}

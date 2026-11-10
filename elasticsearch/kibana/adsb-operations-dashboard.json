@@ -1,0 +1,230 @@
+{
+  "title": "ADS-B Operations & Cases",
+  "description": "Elastic 9.5 dashboard-as-code view of ingest freshness, enrichment errors, emergency squawks, and case outcomes.",
+  "time_range": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh_interval": {
+    "pause": false,
+    "value": 60000
+  },
+  "options": {
+    "auto_apply_filters": true,
+    "hide_panel_borders": false,
+    "hide_panel_titles": false,
+    "sync_colors": true,
+    "sync_cursor": true,
+    "sync_tooltips": true,
+    "use_margins": true
+  },
+  "query": {
+    "expression": "",
+    "language": "kql"
+  },
+  "pinned_panels": [
+    {
+      "id": "adsb-operations-time-slider",
+      "type": "time_slider_control",
+      "width": "large",
+      "grow": true,
+      "config": {
+        "start_percentage_of_time_range": 0.75,
+        "end_percentage_of_time_range": 1,
+        "is_anchored": false
+      }
+    },
+    {
+      "id": "adsb-emergency-code-control",
+      "type": "esql_control",
+      "width": "medium",
+      "grow": false,
+      "config": {
+        "control_type": "STATIC_VALUES",
+        "title": "Emergency squawk",
+        "variable_name": "emergency_squawk",
+        "variable_type": "values",
+        "available_options": ["7500", "7600", "7700"],
+        "selected_options": ["7500"],
+        "single_select": true
+      }
+    }
+  ],
+  "panels": [
+    {
+      "id": "adsb-spatial-dashboard-link",
+      "type": "links",
+      "grid": {
+        "x": 0,
+        "y": 0,
+        "w": 48,
+        "h": 3
+      },
+      "config": {
+        "title": "ADS-B navigation",
+        "layout": "horizontal",
+        "links": [
+          {
+            "type": "dashboardLink",
+            "destination": "611bbe7b-d277-4684-9974-63cdd2b33d08",
+            "label": "Aircraft World Overview",
+            "options": {
+              "open_in_new_tab": false,
+              "use_filters": true,
+              "use_time_range": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "adsb-ingest-freshness",
+      "type": "vis",
+      "grid": {
+        "x": 0,
+        "y": 3,
+        "w": 16,
+        "h": 12
+      },
+      "config": {
+        "type": "data_table",
+        "title": "Ingest freshness by quadrant",
+        "description": "A value above 15 minutes indicates stale ingest for that OpenSky quadrant.",
+        "data_source": {
+          "type": "esql",
+          "query": "FROM demos-aircraft-adsb | STATS last_seen = MAX(@timestamp) BY ingest_quadrant | EVAL minutes_since_last_event = DATE_DIFF(\"minute\", last_seen, NOW()) | SORT ingest_quadrant ASC"
+        },
+        "rows": [
+          {
+            "column": "ingest_quadrant",
+            "label": "Quadrant"
+          }
+        ],
+        "metrics": [
+          {
+            "column": "minutes_since_last_event",
+            "label": "Minutes stale"
+          },
+          {
+            "column": "last_seen",
+            "label": "Last event"
+          }
+        ]
+      }
+    },
+    {
+      "id": "adsb-emergency-summary",
+      "type": "vis",
+      "grid": {
+        "x": 16,
+        "y": 3,
+        "w": 32,
+        "h": 12
+      },
+      "config": {
+        "type": "data_table",
+        "title": "Selected emergency squawk",
+        "description": "Unique aircraft and latest observation for the selected emergency code.",
+        "data_source": {
+          "type": "esql",
+          "query": "FROM demos-aircraft-adsb | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND squawk == ?emergency_squawk | STATS aircraft = COUNT_DISTINCT(icao24), observations = COUNT(*), latest = MAX(@timestamp) BY squawk | SORT latest DESC"
+        },
+        "rows": [
+          {
+            "column": "squawk",
+            "label": "Squawk"
+          }
+        ],
+        "metrics": [
+          {
+            "column": "aircraft",
+            "label": "Unique aircraft"
+          },
+          {
+            "column": "observations",
+            "label": "Observations"
+          },
+          {
+            "column": "latest",
+            "label": "Latest observation"
+          }
+        ]
+      }
+    },
+    {
+      "id": "adsb-enrichment-errors",
+      "type": "vis",
+      "grid": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 14
+      },
+      "config": {
+        "type": "data_table",
+        "title": "Enrichment errors",
+        "description": "Country and airport coverage-zone enrichment failures in the selected time range.",
+        "data_source": {
+          "type": "esql",
+          "query": "FROM demos-aircraft-adsb | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend | WHERE error.enrich.country IS NOT NULL OR error.enrich.airport IS NOT NULL | EVAL source = CASE(error.enrich.country IS NOT NULL, \"country\", \"airport\") | STATS failures = COUNT(*), latest_failure = MAX(@timestamp) BY source | SORT failures DESC"
+        },
+        "rows": [
+          {
+            "column": "source",
+            "label": "Enrichment source"
+          }
+        ],
+        "metrics": [
+          {
+            "column": "failures",
+            "label": "Failures"
+          },
+          {
+            "column": "latest_failure",
+            "label": "Latest failure"
+          }
+        ]
+      }
+    },
+    {
+      "id": "adsb-case-outcomes",
+      "type": "vis",
+      "grid": {
+        "x": 24,
+        "y": 15,
+        "w": 24,
+        "h": 14
+      },
+      "config": {
+        "type": "data_table",
+        "title": "Squawk 7500 case outcomes",
+        "description": "Elastic 9.5 Cases as Data summary for Observability-owned investigations.",
+        "data_source": {
+          "type": "esql",
+          "query": "FROM .cases | WHERE @timestamp >= ?_tstart AND @timestamp <= ?_tend AND owner == \"observability\" AND space_id == \"__KB_SPACE_ID__\" | MV_EXPAND case.tags | WHERE case.tags == \"squawk-7500\" | STATS cases = COUNT(*), mean_time_to_resolve_seconds = AVG(case.time_to_resolve) BY case.status, case.severity | SORT cases DESC"
+        },
+        "rows": [
+          {
+            "column": "case.status",
+            "label": "Status"
+          },
+          {
+            "column": "case.severity",
+            "label": "Severity"
+          }
+        ],
+        "metrics": [
+          {
+            "column": "cases",
+            "label": "Cases"
+          },
+          {
+            "column": "mean_time_to_resolve_seconds",
+            "label": "Mean time to resolve (seconds)"
+          }
+        ]
+      }
+    }
+  ],
+  "tags": []
+}

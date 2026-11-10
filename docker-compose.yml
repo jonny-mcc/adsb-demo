@@ -15,8 +15,8 @@ services:
       - elastic_agent_state:/usr/share/elastic-agent/state
     environment:
       ES_ENDPOINT: ${ES_ENDPOINT}
-      ES_API_KEY_ID: ${ES_API_KEY_ID}
-      ES_API_KEY: ${ES_API_KEY}
+      ES_API_KEY_ID: ${ES_INGEST_API_KEY_ID:-${ES_API_KEY_ID}}
+      ES_API_KEY: ${ES_INGEST_API_KEY:-${ES_API_KEY}}
       OPENSKY_API_CLIENT_ID: ${OPENSKY_API_CLIENT_ID}
       OPENSKY_API_CLIENT_SECRET: ${OPENSKY_API_CLIENT_SECRET}
 
@@ -45,8 +45,8 @@ services:
       LS_API_USER: ${LS_API_USER}
       LS_API_PW: ${LS_API_PW}
       ES_ENDPOINT: ${ES_ENDPOINT}
-      ES_API_KEY_ID: ${ES_API_KEY_ID}
-      ES_API_KEY: ${ES_API_KEY}
+      ES_API_KEY_ID: ${ES_INGEST_API_KEY_ID:-${ES_API_KEY_ID}}
+      ES_API_KEY: ${ES_INGEST_API_KEY:-${ES_API_KEY}}
       OPENSKY_API_USER: ${OPENSKY_API_USER}
       OPENSKY_API_PW: ${OPENSKY_API_PW}
       OPENSKY_API_CLIENT_ID: ${OPENSKY_API_CLIENT_ID}

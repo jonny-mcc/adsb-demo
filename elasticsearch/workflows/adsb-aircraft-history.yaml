@@ -1,3 +1,4 @@
+version: "1"
 name: ADS-B Aircraft History Report
 description: >-
   Generates a comprehensive history report for an individual aircraft over a
@@ -8,34 +9,25 @@ description: >-
 enabled: true
 tags: ["adsb", "aircraft", "history", "report"]
 
-outputs:
-  flight_summary:
-    value: "${{ steps.flight_summary.output }}"
-  positions:
-    value: "${{ steps.positions.output }}"
-  cases:
-    value: "${{ steps.find_cases.output }}"
-  adsbdb_aircraft:
-    value: "${{ steps.adsbdb_aircraft.output }}"
-  adsblol_position:
-    value: "${{ steps.adsblol_position.output }}"
-
 consts:
   indexName: "demos-aircraft-adsb"
 
-inputs:
-  - name: icao24
-    type: string
-    required: true
-    description: "ICAO 24-bit aircraft address (hex, e.g. 406bbb)"
-  - name: lookback
-    type: string
-    required: false
-    default: "now-24h"
-    description: "Lookback period in ES date math (e.g. now-24h, now-7d, now-48h)"
-
 triggers:
   - type: manual
+    inputs:
+      properties:
+        icao24:
+          type: string
+          pattern: "^[0-9A-Fa-f]{6}$"
+          description: "ICAO 24-bit aircraft address (hex, e.g. 406bbb)"
+        lookback_hours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          default: 24
+          description: "Number of hours to analyse (1–720)."
+      required:
+        - icao24
 
 steps:
   # ------------------------------------------------------------------
@@ -55,10 +47,7 @@ steps:
                   icao24: "{{ inputs.icao24 }}"
               - range:
                   "@timestamp":
-                    gte: "{{ inputs.lookback }}"
-              - range:
-                  "@timestamp":
-                    gte: "now-30d"
+                    gte: "now-{{ inputs.lookback_hours }}h"
         aggs:
           callsigns:
             terms:
@@ -152,10 +141,7 @@ steps:
                   icao24: "{{ inputs.icao24 }}"
               - range:
                   "@timestamp":
-                    gte: "{{ inputs.lookback }}"
-              - range:
-                  "@timestamp":
-                    gte: "now-30d"
+                    gte: "now-{{ inputs.lookback_hours }}h"
         sort:
           - "@timestamp": asc
         _source:
@@ -177,10 +163,14 @@ steps:
   # 3. Related cases — Kibana cases tagged with this aircraft's icao24
   # ------------------------------------------------------------------
   - name: find_cases
-    type: kibana.request
+    type: cases.findCases
     with:
-      method: GET
-      path: "__SPACE_PREFIX__/api/cases/_find?tags=icao24:{{ inputs.icao24 }}&perPage=20&sortField=createdAt&sortOrder=desc"
+      tags:
+        - "icao24:{{ inputs.icao24 }}"
+      page: 1
+      perPage: 20
+      sortField: createdAt
+      sortOrder: desc
     on-failure:
       continue: true
 
@@ -195,19 +185,6 @@ steps:
     on-failure:
       continue: true
 
-  # WORKAROUND(#9): Write adsbdb response to cache index
-  - name: cache_adsbdb
-    type: elasticsearch.request
-    with:
-      method: PUT
-      path: "/adsb-enrichment-cache/_doc/adsbdb:{{ inputs.icao24 }}"
-      body:
-        type: "adsbdb_aircraft"
-        icao24: "{{ inputs.icao24 }}"
-        raw: "{{ steps.adsbdb_aircraft.output | json }}"
-    on-failure:
-      continue: true
-
   # ------------------------------------------------------------------
   # 5. adsb.lol — current live position (always fetch fresh)
   # ------------------------------------------------------------------
@@ -219,15 +196,11 @@ steps:
     on-failure:
       continue: true
 
-  # WORKAROUND(#9): Write adsb.lol response to cache index
-  - name: cache_adsblol
-    type: elasticsearch.request
+  - name: return_outputs
+    type: data.set
     with:
-      method: PUT
-      path: "/adsb-enrichment-cache/_doc/adsblol:{{ inputs.icao24 }}"
-      body:
-        type: "adsblol_position"
-        icao24: "{{ inputs.icao24 }}"
-        raw: "{{ steps.adsblol_position.output | json }}"
-    on-failure:
-      continue: true
+      flight_summary: "${{ steps.flight_summary.output }}"
+      positions: "${{ steps.positions.output }}"
+      cases: "${{ steps.find_cases.output }}"
+      adsbdb_aircraft: "${{ steps.adsbdb_aircraft.output }}"
+      adsblol_position: "${{ steps.adsblol_position.output }}"

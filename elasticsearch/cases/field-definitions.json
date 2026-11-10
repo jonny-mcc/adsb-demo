@@ -1,0 +1,30 @@
+[
+  {
+    "name": "icao24",
+    "owner": "observability",
+    "isGlobal": true,
+    "description": "ICAO 24-bit aircraft address.",
+    "definition": "name: icao24\ncontrol: INPUT_TEXT\ntype: keyword\nlabel: ICAO24 Address\nvalidation:\n  pattern: \"^[0-9A-Fa-f]{6}$\"\n"
+  },
+  {
+    "name": "callsign",
+    "owner": "observability",
+    "isGlobal": true,
+    "description": "Aircraft flight callsign.",
+    "definition": "name: callsign\ncontrol: INPUT_TEXT\ntype: keyword\nlabel: Callsign\n"
+  },
+  {
+    "name": "triage_assessment",
+    "owner": "observability",
+    "isGlobal": true,
+    "description": "Structured AI triage outcome.",
+    "definition": "name: triage_assessment\ncontrol: SELECT_BASIC\ntype: keyword\nlabel: AI Triage Assessment\nmetadata:\n  options: [pending, genuine, false_positive]\n"
+  },
+  {
+    "name": "confidence",
+    "owner": "observability",
+    "isGlobal": true,
+    "description": "Structured AI confidence level.",
+    "definition": "name: confidence\ncontrol: SELECT_BASIC\ntype: keyword\nlabel: Confidence\nmetadata:\n  options: [pending, low, medium, high]\n"
+  }
+]

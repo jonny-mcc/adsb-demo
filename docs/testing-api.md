@@ -1,7 +1,7 @@
 # Testing via API
 
-After editing workflows (`elasticsearch/workflows/`), agents (`elasticsearch/agents/`),
-or aggregation queries, validate changes via the Elasticsearch and Kibana REST APIs.
+On the supported 9.5 baseline, validate agent, workflow deployment, alert wiring,
+and trace collection through the Elasticsearch and Kibana REST APIs.
 All commands require `required_permissions: ["all"]` in sandboxed environments.
 
 ## Prerequisites
@@ -38,12 +38,8 @@ The Kibana Workflows API (Technical Preview) requires the extra header
 `x-elastic-internal-origin: kibana` on every request.
 
 ```sh
-# 1. Find workflow ID by name (list endpoint unchanged)
-WF_ID=$(curl -s "${KB_BASE}/api/workflows" \
-  -H "Authorization: ApiKey ${ES_API_KEY_ENCODED}" \
-  -H "kbn-xsrf: true" \
-  -H "x-elastic-internal-origin: kibana" \
-  | jq -r '.results[] | select(.name=="My Workflow Name") | .id')
+# 1. Use the source-controlled workflow ID
+WF_ID=adsb-squawk-7500-hijack-investigation
 
 # 2. Run — NOTE: path changed in 9.4.x, now requires "workflow/" segment
 EXEC_ID=$(curl -s -X POST "${KB_BASE}/api/workflows/workflow/${WF_ID}/run" \
@@ -102,3 +98,42 @@ Some workflows trigger real external actions when run:
 | `squawk-7500-create-case`          | Creates or updates a Kibana case              |
 
 Agent converse calls may invoke workflow tools and incur LLM costs.
+
+## Verify alert action wiring
+
+```sh
+curl -s "${KB_BASE}/api/alerting/rule/7500a1e7-cafe-4bee-b500-deadbeef7500" \
+  -H "Authorization: ApiKey ${ES_API_KEY_ENCODED}" \
+  -H "kbn-xsrf: true" \
+  | jq '.actions[] | {
+      connector: .id,
+      workflow_id: .params.subActionParams.workflowId
+    }'
+```
+
+The workflow ID must be `adsb-squawk-7500-hijack-investigation`.
+
+## Verify dashboard-as-code deployment
+
+```sh
+curl -s "${KB_BASE}/api/dashboards/adsb-operations-cases" \
+  -H "Authorization: ApiKey ${ES_API_KEY_ENCODED}" \
+  -H "kbn-xsrf: true" \
+  | jq '{title, panels: (.panels | length), controls: (.pinned_panels | length)}'
+```
+
+Expect the **ADS-B Operations & Cases** title, five panels, and two pinned
+controls. Spatial Maps remain in the saved-object dashboards because the 9.5
+Dashboards API does not support Maps panels.
+
+## Verify Agent Builder traces
+
+After one agent conversation:
+
+```sh
+curl -s "${ES_ENDPOINT}/traces-agent_builder.otel-*/_count" \
+  -H "Authorization: ApiKey ${ES_API_KEY_ENCODED}"
+```
+
+The managed **[Elastic] Agent Builder Overview** dashboard is installed per
+space by `make deploy-workflows`.

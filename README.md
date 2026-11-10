@@ -40,7 +40,7 @@ Each input covers one quadrant of the globe. Splitting the world into four small
 | `adsb-q3` | South-West (Americas/South) | lat -90 to 0, lon -180 to 0 |
 | `adsb-q4` | South-East (Africa/Oceania) | lat -90 to 0, lon 0 to 180  |
 
-All four pipelines write to the same `demos-aircraft-adsb` data stream. An ingest pipeline enriches each document with country/region metadata and nearest airport proximity via geo-shape enrich policies.
+All four pipelines write to the same `demos-aircraft-adsb` data stream. An ingest pipeline enriches each document with country/region metadata and matching airport coverage zones via geo-shape enrich policies.
 
 ### Pipeline Design — Polling with OAuth2
 
@@ -62,7 +62,7 @@ sequenceDiagram
 
 1. **`auth.oauth2`** — Agent obtains and refreshes a client-credentials token from the OpenSky Keycloak endpoint. The token never appears in indexed documents.
 2. **CEL program** — `GET /states/all` for that quadrant, filters empty/null ICAO24 values, maps the 17-element arrays into named fields, and sets `@timestamp` from `time_position` (falling back to `last_contact`).
-3. **Elasticsearch output** — writes to the existing `demos-aircraft-adsb` data stream. The stream's default ingest pipeline still enriches country/region and nearest airport.
+3. **Elasticsearch output** — writes to the existing `demos-aircraft-adsb` data stream. The stream's default ingest pipeline still enriches country/region and airport coverage-zone matches.
 
 Four CEL inputs (`adsb-q1`–`adsb-q4`) run in one Agent process, one per bounding box. A failed HTTP call yields an empty event batch for that interval rather than blocking the other quadrants.
 
@@ -82,7 +82,7 @@ Make sure you have an [LLM configured in Kibana](https://www.elastic.co/docs/exp
 
 ### Workflows
 
-The setup script deploys several [Elastic Workflows](https://www.elastic.co/docs/explore-analyze/workflows) (Preview, Stack 9.3+):
+The setup script deploys several [Elastic Workflows](https://www.elastic.co/docs/explore-analyze/workflows) on the supported Elastic Stack 9.5 baseline:
 
 **Daily Flight Briefing** — runs automatically at 08:00 Europe/London each day:
 
@@ -102,9 +102,9 @@ The setup script deploys several [Elastic Workflows](https://www.elastic.co/docs
 
 **Defunct Callsign Detector** — runs daily at 07:30 Europe/London and on-demand via the ADS-B tracking agent. Uses ES|QL LOOKUP JOIN to cross-reference live ADS-B callsign prefixes against a lookup index of 781 known defunct airlines (sourced from Wikipedia). Detects aircraft broadcasting callsign prefixes from airlines that have ceased operations — results are investigative leads for stale transponder configurations, reallocated ICAO designators, or suspicious activity. Also runs inline as part of the Daily Flight Briefing.
 
-Supporting workflows (`squawk-7500-enrich`, `squawk-7500-create-case`, `hijack-cases-summary`, `adsb-aggregate-stats`) are deployed as agent tools.
+Supporting workflows (`squawk-7500-enrich`, `squawk-7500-create-case`, `hijack-cases-summary`, `adsb-aggregate-stats`) are deployed as agent tools. Workflows use source-controlled IDs and the bulk create/overwrite API before alert actions and tools are wired.
 
-> **Known limitation (Stack 9.3.x)** — Elastic Workflows is a Preview feature, and behaviour may differ between deployment types. Workflow `outputs` are not yet functional on Elastic Stack / Cloud Hosted 9.3.x ([#9](https://github.com/face0b1101/adsb-demo/issues/9)). Agent-tool workflows include `outputs` sections but the runtime ignores them, so agents receive `null` output and fall back to direct ES queries. As a workaround, workflows with HTTP steps write external API responses to the `adsb-enrichment-cache` index; agents query this index as a fallback. This workaround will be removed once outputs are functional ([#12](https://github.com/face0b1101/adsb-demo/issues/12)). The feature works correctly on Elastic Cloud Serverless.
+> **Version baseline** — Elastic Stack 9.5 is required for the complete setup, including stable workflow IDs, Agent Builder traces, per-agent access control, workflow execution privileges, and GA case analytics indices. Capability probes keep core ingestion and dashboards usable on deployment types that omit ILM, snapshot repositories, Cases, alerting, or Agent Builder.
 
 > **Observability features** — This demo leverages Elastic Observability capabilities including the Observability solution view (Kibana space), Cases (`owner: observability`), and alerting (`consumer: observability`). The full experience requires a deployment that supports these features — see the [deployment comparison table](#getting-started-with-elasticsearch).
 
@@ -116,11 +116,14 @@ Supporting workflows (`squawk-7500-enrich`, `squawk-7500-create-case`, `hijack-c
 - **Dark mode (optional)** — if preferred, enable dark mode for your space: _Stack Management > Advanced Settings_ > search for `theme:darkMode` and set it to `Enabled`.
 - **Slack (optional)** — to receive briefings in Slack, [create a Slack app](https://api.slack.com/messaging/webhooks) with an incoming webhook and add the webhook URL to `.env` as `SLACK_WEBHOOK_URL`. The setup script creates the Kibana connector automatically. Alternatively, configure the connector manually in Kibana under Stack Management > Connectors.
 - **Cases (optional)** — the squawk 7500 hijack investigation workflow uses Kibana Cases for full functionality — tracking triage assessments, deduplication, and Slack routing. Cases are available on Cloud Hosted, Observability Serverless, and start-local (see the [deployment comparison table](#getting-started-with-elasticsearch)). Workflows use `owner: observability` for case management. Without Cases (e.g. Elasticsearch Serverless), the workflow and daily briefing still operate but skip case management and investigation-outcomes sections gracefully.
-- **GNews (optional)** — the hijack investigation and enrichment workflows correlate squawk 7500 signals with news articles via the [GNews API](https://gnews.io). Sign up for a free API key (100 requests/day) and add it to `.env` as `GNEWS_API_KEY`. The free tier has a 12-hour article delay; the paid Essential tier provides real-time results. If not set, the news correlation step is skipped gracefully.
+- **GNews (optional)** — the hijack investigation and enrichment workflows correlate squawk 7500 signals with news articles via the [GNews API](https://gnews.io). Add the key to `.env` as `GNEWS_API_KEY`; setup stores it in an encrypted Kibana `.http` connector `secretQueryParams`. The key is never written into deployed workflow URLs. If not set, news requests run without authentication and fail gracefully if the service requires a key.
+- **Agent traces** — trace collection is enabled by default in 9.5. Setup installs the managed **[Elastic] Agent Builder Overview** dashboard in the selected space. Demo roles can read `traces-agent_builder.otel-*`.
+- **Dashboard as code** — setup deploys the **ADS-B Operations & Cases** dashboard through the GA 9.5 Dashboards API. Inline ES|QL panels show ingest freshness, enrichment failures, emergency squawks, and space-scoped Cases analytics; pinned ES|QL and time-slider controls keep the definition portable. The existing spatial dashboards remain saved objects because the API does not yet support Maps panels.
+- **Private hijack agent (optional)** — configure comma-separated Kibana usernames in `HIJACK_AGENT_ALLOWED_USERS`, `HIJACK_AGENT_EDITORS`, and `HIJACK_AGENT_MANAGERS`. Setup grants the corresponding User, Editor, and Manager roles through the 9.5 per-agent access-control API.
 
 ## Getting Started with Elasticsearch
 
-You need a running Elasticsearch cluster and Kibana instance to receive the data. Three options are supported:
+You need Elasticsearch and Kibana 9.5 or later. Three deployment options are supported:
 
 | Option                                                                          | Cases | Alert-triggered workflows | Notes                                                                                        |
 | ------------------------------------------------------------------------------- | :---: | :-----------------------: | -------------------------------------------------------------------------------------------- |
@@ -130,6 +133,13 @@ You need a running Elasticsearch cluster and Kibana instance to receive the data
 | Elasticsearch Serverless                                                        |  No   |            No             | Core ingestion and dashboards work, but Cases and alert-triggered workflows are unavailable. |
 
 > **Note** — The hijack investigation workflow uses Kibana Cases to record investigation outcomes. On deployments without Cases support the workflow still runs but skips case creation gracefully (`on-failure: continue`). All other features — ingestion, dashboards, AI agents, the daily briefing — work on every deployment type.
+
+`setup.sh` probes deployment capabilities instead of assuming Hosted features:
+
+- Data Stream Lifecycle manages the 730-day retention period on every deployment. The legacy ILM policy is available only as an explicit compatibility target and is not part of the default setup.
+- Set `DLM_FROZEN_AFTER` (for example `30d`) to request a 9.5 frozen searchable-snapshot transition. Setup adds it only with an Enterprise/trial licence and an available snapshot repository.
+- Agent Builder traces, per-agent access control, alerting, or Cases unavailable: the optional resource is skipped with a warning.
+- TSDS remains the common data model. Historical imports are a cluster-wide opt-in (`ENABLE_HISTORICAL_TSDS_IMPORT=true`) and are applied only when the deployment accepts the required cluster settings.
 
 Your Elasticsearch and Kibana endpoint URLs are shown on the deployment overview page (Cloud) or at the end of the install (start-local). You will also need an API key — see below.
 
@@ -173,9 +183,9 @@ POST /_security/api_key
 }
 ```
 
-> **Privileges** — `manage_security` is required for the automated [service user](#service-user-automated) that ensures correct attribution of workflow actions in Kibana Cases. The `all` application privilege is equivalent to the `kibana_admin` built-in role — it grants full access to all Kibana features across all spaces, including space management, saved objects, AI agents, workflows, connectors, alerting rules, cases, and advanced settings. This works identically on Cloud Hosted, Observability Serverless, and start-local — each deployment exposes only the features it supports. If your existing API key lacks `manage_security`, `setup.sh` falls back gracefully — the service user step is skipped and actions are attributed to the API key owner.
+> **Privileges** — `manage_security` is required only on the setup identity so it can create the automation service user, ingest key, roles, and demo users. The generated automation identity has `manage` but not `manage_security`, and its Kibana application privilege is scoped to the selected ADS-B space. The setup key retains responsibility for security and space administration. If the setup key lacks `manage_security`, `setup.sh` skips service-user creation and attributes actions to the setup key owner.
 >
-> **ILM and `fm-clone-*`:** on Elasticsearch 9.2 and newer, ILM may create short-lived indices named `fm-clone-*` when running force merge before a searchable snapshot. `setup.sh` grants the `adsb-automation` role `manage` and `view_index_metadata` on `fm-clone-*` so lifecycle steps succeed when that user last updated the ILM policy. Include the same `indices` entry in your bootstrap API key’s `role_descriptors` if you create keys manually (see JSON above).
+> **Lifecycle:** the default setup uses Data Stream Lifecycle, not ILM. The legacy ILM compatibility policy no longer uses a searchable-snapshot phase or `fm-clone-*` privileges.
 
 From the response, copy the three values into your `.env` file:
 
@@ -186,6 +196,14 @@ ES_API_KEY_ENCODED=VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==
 ```
 
 `setup.sh` uses the base64-encoded key for REST calls; Elastic Agent and Logstash use the `id:key` pair directly.
+
+The setup key is intentionally separate from the runtime ingest key. After bootstrap, create a key limited to `create_doc` on the ADS-B data stream:
+
+```bash
+make create-ingest-key
+```
+
+Copy the printed `ES_INGEST_API_KEY_ID` and `ES_INGEST_API_KEY` values into `.env`. Docker Compose uses them when present and falls back to the setup key only for backwards compatibility.
 
 ## Quick Start
 
@@ -210,6 +228,8 @@ ES_ENDPOINT=https://my-deployment.es.us-central1.gcp.cloud.es.io
 ES_API_KEY_ID=VuaCfGcBCdbkQm-e5aOx
 ES_API_KEY=ui2lp2axTNmsyakw9tvNnw
 ES_API_KEY_ENCODED=VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==
+ES_INGEST_API_KEY_ID=runtime_ingest_key_id
+ES_INGEST_API_KEY=runtime_ingest_key_secret
 KB_ENDPOINT=https://my-deployment.kb.us-central1.gcp.cloud.es.io
 KB_SPACE=adsb              # optional — deploy into a named Kibana space
 
@@ -236,7 +256,7 @@ The script is safe to re-run — existing resources are skipped by default. Use 
 ./setup.sh --help                    # Show available groups and flags
 ```
 
-Available groups: `space`, `ilm`, `indices`, `enrich`, `pipelines`, `kibana`, `agents`, `workflows`, `demouser`. There are also `make` shortcuts for each group — see [Make Targets](#make-targets) below.
+Available groups: `ingestkey`, `space`, `ilm`, `indices`, `enrich`, `pipelines`, `kibana`, `cases`, `workflows`, `tools`, `skills`, `agents`, and `demouser`. There are also `make` shortcuts for each group — see [Make Targets](#make-targets) below.
 
 ### Demo Users (optional)
 
@@ -249,10 +269,12 @@ make deploy-demouser FORCE=1  # Reset passwords and overwrite roles
 
 | User       | Role                    | Purpose                                                                                         |
 | ---------- | ----------------------- | ----------------------------------------------------------------------------------------------- |
-| `goose`    | `adsb-demo-users`       | Audience-facing — dashboards, Discover, maps, AI agents, cases, and workflow viewing            |
+| `goose`    | `adsb-demo-users`       | Audience-facing — read-only data, dashboards, Agent Builder, workflow read/execute, Cases, case analytics, and traces |
 | `maverick` | `adsb-demo-power-users` | Presenter/behind-the-scenes — everything goose has, plus Dev Tools, index stats, and management |
 
 Both users are scoped to the `KB_SPACE` space (if set) and have read-only access to demo indices. Passwords are randomly generated on first run and printed to the terminal — re-running without `FORCE=1` preserves existing passwords.
+
+On 9.5, `goose` can report on Cases as Data through the read-only `.cases`, `.cases-activity`, and `.cases-attachments` analytics indices. This access spans spaces, so the source-controlled operations dashboard filters by `space_id` and `owner`.
 
 Demo users are also created automatically as part of `make setup`. Use `--no-service-user` with `--only demouser` if your API key lacks `manage_security`.
 
@@ -298,16 +320,20 @@ Run `make help` to see all available targets. Every target is a thin wrapper aro
 | Command                 | Description                                                  |
 | ----------------------- | ------------------------------------------------------------ |
 | `make setup`            | Run full Elasticsearch setup (skip existing)                 |
-| `make deploy-ilm`       | Deploy ES ILM policy (skipped on Serverless)                 |
+| `make create-ingest-key` | Create a least-privilege runtime ingest API key              |
+| `make deploy-ilm`       | Deploy the legacy ILM compatibility policy                   |
 | `make deploy-indices`   | Deploy ES index templates and data streams                   |
 | `make deploy-enrich`    | Deploy ES enrich policies                                    |
 | `make deploy-pipelines` | Deploy ES ingest pipelines                                   |
 | `make deploy-kibana`    | Deploy Kibana saved objects (dashboards, data views)         |
+| `make deploy-cases`     | Deploy case fields and templates                             |
 | `make deploy-workflows` | Deploy Kibana workflows                                      |
+| `make deploy-tools`     | Deploy Agent Builder workflow tools                          |
+| `make deploy-skills`    | Deploy Agent Builder skills                                  |
 | `make deploy-agents`    | Deploy Kibana AI agents                                      |
 | `make deploy-demouser`  | Deploy demo user roles and users                             |
-| `make deploy-es`        | Deploy all ES resources (ilm + indices + enrich + pipelines) |
-| `make deploy-ai`        | Deploy AI layer (workflows + agents)                         |
+| `make deploy-es`        | Deploy all default ES resources (indices + enrich + pipelines) |
+| `make deploy-ai`        | Deploy AI layer (workflows + tools + skills + agents)        |
 | `make redeploy`         | Re-deploy all resources with `--force`                       |
 
 Any deploy target accepts `FORCE=1` to overwrite existing resources:
@@ -335,6 +361,7 @@ Default engine is Elastic Agent (`INGEST_ENGINE=agent`). Set `INGEST_ENGINE=logs
 | Command         | Description                                |
 | --------------- | ------------------------------------------ |
 | `make validate` | Validate Docker Compose config             |
+| `make validate-static` | Validate shell syntax and JSON assets     |
 | `make health`   | Check Elasticsearch cluster health         |
 | `make ps`       | Show running containers                    |
 | `make shell`    | Open a shell inside the running ingest container |
@@ -359,7 +386,7 @@ Default engine is Elastic Agent (`INGEST_ENGINE=agent`). Set `INGEST_ENGINE=logs
 │   │   └── adsb-hijack-assessment-agent.json         # AI agent definition (Hijack Assessment)
 │   ├── enrich/
 │   │   ├── adsb-geo-enrich-policy.json               # Country geo-shape enrich policy
-│   │   └── adsb-airport-enrich-policy.json           # Airport proximity enrich policy
+│   │   └── adsb-airport-enrich-policy.json           # Airport coverage-zone enrich policy
 │   ├── indices/
 │   │   ├── geo-shapes-world-countries-50m-mapping.json # Source index mapping for country boundaries
 │   │   ├── adsb-airports-geo-mapping.json            # Source index mapping for airports (Natural Earth + coverage)

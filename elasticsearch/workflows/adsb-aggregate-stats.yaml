@@ -1,3 +1,4 @@
+version: "1"
 name: ADS-B Aggregate Stats
 description: >-
   Aggregates 24 hours of ADS-B flight statistics — unique aircraft, busiest
@@ -5,10 +6,6 @@ description: >-
   and emergency squawks. Returns raw aggregation results.
 enabled: true
 tags: ["adsb", "aggregation"]
-
-outputs:
-  aggregations:
-    value: "${{ steps.aggregate_stats.output }}"
 
 consts:
   indexName: "demos-aircraft-adsb"
@@ -43,7 +40,7 @@ steps:
               unique_flights:
                 cardinality:
                   script:
-                    source: "doc['icao24'].value + ':' + doc['callsign'].value"
+                    source: "doc['icao24'].value + ':' + (doc['callsign'].size() == 0 ? '' : doc['callsign'].value)"
                     lang: painless
           origin_countries:
             terms:
@@ -55,6 +52,7 @@ steps:
               unique_aircraft:
                 cardinality:
                   field: icao24
+
           activity_breakdown:
             terms:
               field: airport.activity
@@ -62,7 +60,7 @@ steps:
               unique_flights:
                 cardinality:
                   script:
-                    source: "doc['icao24'].value + ':' + doc['callsign'].value + ':' + doc['airport.iata_code'].value"
+                    source: "doc['icao24'].value + ':' + (doc['callsign'].size() == 0 ? '' : doc['callsign'].value) + ':' + (doc['airport.iata_code'].size() == 0 ? '' : doc['airport.iata_code'].value)"
                     lang: painless
           traffic_by_subregion:
             terms:
@@ -74,6 +72,7 @@ steps:
               unique_aircraft:
                 cardinality:
                   field: icao24
+
           traffic_by_continent:
             terms:
               field: geo.CONTINENT
@@ -107,3 +106,8 @@ steps:
               unique_aircraft:
                 cardinality:
                   field: icao24
+
+  - name: return_outputs
+    type: data.set
+    with:
+      aggregations: "${{ steps.aggregate_stats.output }}"

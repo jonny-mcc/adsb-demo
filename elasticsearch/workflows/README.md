@@ -195,11 +195,11 @@ flowchart TD
     adsblol --> AI
     GNewsStep --> AI
 
-    AI --> UpdateCase["8. update_case_enrichment\nPost assessment +\ndata-source summary\nto Kibana case"]
+    AI --> UpdateCase["8. update_case\nStore structured assessment\nand add case comment"]
 
     UpdateCase --> Branch2{"9. Triage\nassessment?"}
     Branch2 -->|GENUINE| SlackAlert["notify_slack\nSlack alert with\ncase link"]
-    Branch2 -->|FALSE_POSITIVE| TagFP["tag_false_positive\nTag case"]
+    Branch2 -->|FALSE_POSITIVE| Finish["Complete without\nexternal notification"]
 ```
 
 **Step-by-step summary:**
@@ -220,13 +220,12 @@ flowchart TD
    - **news_search** -- news articles mentioning the callsign and "hijack"
      (requires `GNEWS_API_KEY`).
 7. **ai_assessment** -- sends all enrichment data to the Hijack Assessment
-   Analyst agent, which returns a structured triage assessment (`genuine` or
-   `false_positive`) with confidence and reasoning.
-8. **update_case_enrichment** -- posts the AI assessment and a data-source
-   summary as a comment on the Kibana case.
-9. **route_triage** (branch) -- if the AI triage assessment is `genuine`, sends
-   a Slack alert with aircraft details and a case link; otherwise tags the case
-   as a false positive.
+   Analyst agent with a JSON schema. Typed fields are returned in
+   `output.structured_output`.
+8. **update_case** -- updates status, severity, category, tags, and custom
+   fields once, then adds the structured assessment as a comment.
+9. **route_triage** (branch) -- sends a Slack alert with aircraft details and a
+   case link only when the structured assessment is `genuine`.
 
 ______________________________________________________________________
 
@@ -284,7 +283,7 @@ one exists, adds the assessment as a comment; otherwise creates a new case.
 | `icao24`            | string | yes      | ICAO 24-bit aircraft address (hex) |
 | `callsign`          | string | no       | Flight callsign                    |
 | `triage_assessment` | string | yes      | `genuine` or `false_positive`      |
-| `confidence`        | string | yes      | Confidence score (0--1)            |
+| `confidence`        | string | yes      | `low`, `medium`, or `high`          |
 | `reasoning`         | string | yes      | Full assessment reasoning text     |
 
 ```mermaid
@@ -316,7 +315,7 @@ Specialist agent.
 | Name       | Type   | Required | Default   | Description                        |
 | ---------- | ------ | -------- | --------- | ---------------------------------- |
 | `icao24`   | string | yes      | —         | ICAO 24-bit aircraft address (hex) |
-| `lookback` | string | no       | `now-24h` | Lookback period in ES date math    |
+| `lookback_hours` | integer | no    | `24`      | Hours to analyse (1–720)           |
 
 ```mermaid
 flowchart TD
@@ -353,7 +352,7 @@ names (e.g. "Heathrow"), IATA codes (e.g. "LHR"), or ICAO/GPS codes (e.g.
 | Name       | Type   | Required | Default   | Description                               |
 | ---------- | ------ | -------- | --------- | ----------------------------------------- |
 | `airport`  | string | yes      | —         | Airport name, IATA code, or ICAO/GPS code |
-| `lookback` | string | no       | `now-24h` | Lookback period in ES date math           |
+| `lookback_hours` | integer | no    | `24`      | Hours to analyse (1–720)                  |
 
 **Steps:**
 
@@ -417,13 +416,13 @@ defunct airline with aircraft counts and observed callsigns.
 
 | #   | Step name                  | What it does                                                |
 | --- | -------------------------- | ----------------------------------------------------------- |
-| 1   | `detect_defunct_callsigns` | ES                                                          |
-| 2   | `cache_detections`         | Write results to `adsb-enrichment-cache` (Stack workaround) |
+| 1   | `detect_defunct_callsigns` | ES\|QL equality join against the defunct-airline lookup index |
+| 2   | `return_outputs`           | Return the typed workflow-tool result                       |
 
 ```mermaid
 flowchart LR
-    Trigger["Schedule 07:30\nor manual"] --> ESQL["detect_defunct_callsigns\nES|QL LOOKUP JOIN\n24h window"]
-    ESQL --> Cache["cache_detections\nadsb-enrichment-cache"]
+    Trigger["Schedule 07:30\nor manual"] --> ESQL["detect_defunct_callsigns\nES|QL LOOKUP JOIN\nbounded window"]
+    ESQL --> Output["Workflow output"]
 ```
 
 ______________________________________________________________________
@@ -434,13 +433,14 @@ ______________________________________________________________________
 **Trigger:** manual (registered as a workflow tool)
 **Tags:** `adsb`, `squawk-7500`, `cases`, `briefing`
 
-Fetches squawk 7500 (hijack) investigation cases from Kibana case management.
+Fetches squawk 7500 (hijack) investigation cases from Kibana case management
+using the native `cases.findCases` step.
 Returns case titles, tags (including `triage:genuine` or `triage:false_positive`),
 and status for use in the daily briefing or interactive queries.
 
 ```mermaid
 flowchart LR
-    Trigger["Manual trigger"] --> Fetch["fetch_cases\nGET /api/cases/_find\ntags=squawk-7500"]
+    Trigger["Manual trigger"] --> Fetch["fetch_cases\ncases.findCases\ntag=squawk-7500"]
     Fetch --> Output["Cases array"]
 ```
 
@@ -467,8 +467,8 @@ registered so it can trigger workflows on the user's behalf.
 - **Config:** `../agents/adsb-daily-briefing-agent.json`
 - **Workflow tools:** `adsb-aggregate-stats`
 - **Role:** Generates and discusses daily ADS-B flight briefings. When a user
-  asks for a briefing in chat, the agent calls the Aggregate Stats workflow,
-  waits for results, and formats them into a structured report. The Daily Flight
+  asks for a briefing in chat, the agent calls the Aggregate Stats workflow and
+  formats its result into a structured report. The Daily Flight
   Briefing workflow also runs the Defunct Callsign Detector query inline (section
   8\) and includes matches as section 11 of the briefing.
 
@@ -509,54 +509,14 @@ full setup instructions.
 Gotchas discovered during development. See also [Known Quirks](../../docs/known-quirks.md)
 for the full list.
 
-### Indexing documents from step outputs
-
-The `elasticsearch.index` step type does not support `| json` filters or `${{ }}`
-type-preserving expressions in its `document` body. Nested objects are silently
-serialised as the string `[object Object]`.
-
-Use `elasticsearch.request` with `method: PUT` instead:
-
-```yaml
-- name: cache_result
-  type: elasticsearch.request
-  with:
-    method: PUT
-    path: "/my-index/_doc/{{ inputs.id }}"
-    body:
-      label: "{{ inputs.label }}"
-      data: "{{ steps.http_call.output | json }}"
-```
-
-The `| json` filter serialises the object as a JSON string that Elasticsearch
-stores as a `text` field. Consumers parse the string to access nested values.
-
-### Handling missing indices in `if` conditions
-
-When a step with `on-failure: continue: true` fails (e.g. searching an index
-that does not exist), its output is `null`. An `if` condition referencing that
-output evaluates unpredictably — `null` is not `0`, so
-`${{ steps.X.output.hits.total.value == 0 }}` is false when the step failed.
-Design for the first-run case where the index may not exist yet, or use
-always-write patterns instead of check-before-write.
-
 ### Passing step data to agents
 
-Workflow `outputs` are not functional on Stack 9.3.x-9.4.x (quirk #4). Two patterns
-for getting external data to agents:
-
-1. **`ai.agent` step** (for autonomous workflows) — assemble all step outputs
-   into the agent message using `{{ steps.X.output | json:2 }}`. The agent
-   receives the data inline. Used by `squawk-7500-hijack-investigation`.
-
-2. **Cache index** (for agent-called tools) — write HTTP responses to an ES
-   index via `elasticsearch.request` PUT, then tell the agent to query the
-   cache index as a fallback. Used by `adsb-aircraft-history` and
-   `squawk-7500-enrich`.
+9.5 workflow inputs belong under the manual trigger. A workflow tool returns the
+output of its final `data.set` step. Autonomous workflows can pass prior step
+outputs directly to `ai.agent` using `{{ steps.X.output | json:2 }}`.
 
 ### Consuming `ai.agent` step output
 
-From Kibana 9.4.2 the `ai.agent` step returns an object `{message: string}`,
-not a plain string. Reference `{{ steps.X.output.message }}` in templates and
-`steps.X.output.message contains '...'` in conditions. Plain `{{ steps.X.output }}`
-renders as `[object Object]` and `contains` checks always evaluate false.
+The `ai.agent` step returns an object. Reference `output.message` for free text.
+When the step declares a schema, reference typed values under
+`output.structured_output`; do not parse prose in conditions.

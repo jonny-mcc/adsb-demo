@@ -1,3 +1,4 @@
+version: "1"
 name: Defunct Callsign Detector
 description: >-
   Detects aircraft broadcasting callsign prefixes that match known defunct
@@ -9,19 +10,16 @@ description: >-
 enabled: true
 tags: ["adsb", "callsign", "defunct", "esql"]
 
-outputs:
-  detections:
-    value: "${{ steps.detect_defunct_callsigns.output }}"
-
-inputs:
-  - name: lookback
-    type: string
-    required: false
-    default: "24 hours"
-    description: "Lookback period as an ES|QL time interval (e.g. 24 hours, 7 days, 30 days). Max 30 days."
-
 triggers:
   - type: manual
+    inputs:
+      properties:
+        lookback_hours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          default: 24
+          description: "Number of hours to analyse (1–720)."
   - type: scheduled
     with:
       rrule:
@@ -38,7 +36,8 @@ steps:
       format: json
       query: |
         FROM demos-aircraft-adsb
-        | WHERE @timestamp >= NOW() - {{ inputs.lookback }}
+        | WHERE @timestamp >= NOW() - ? * 1 hour
+        | WHERE callsign IS NOT NULL AND LENGTH(callsign) >= 3
         | EVAL callsign_prefix = SUBSTRING(callsign, 0, 3)
         | LOOKUP JOIN adsb-airlines-defunct ON callsign_prefix
         | WHERE defunct_airline_name IS NOT NULL
@@ -48,19 +47,12 @@ steps:
                 countries = VALUES(origin_country)
           BY callsign_prefix, defunct_airline_name, defunct_country,
              defunct_icao, operations.ceased.text
-        | SORT aircraft_count DESC
+        | SORT aircraft_count DESC, callsign_prefix ASC
+        | LIMIT 100
+      params:
+        - "${{ inputs.lookback_hours }}"
 
-  # WORKAROUND(#9): Write ES|QL results to cache index so agents can
-  # retrieve them when workflow outputs are null on Stack 9.3.x.
-  # Remove once https://github.com/face0b1101/adsb-demo/issues/9 is resolved.
-  - name: cache_detections
-    type: elasticsearch.request
+  - name: return_outputs
+    type: data.set
     with:
-      method: PUT
-      path: "/adsb-enrichment-cache/_doc/defunct-callsign-detections"
-      body:
-        type: "defunct_callsign_detections"
-        raw: "{{ steps.detect_defunct_callsigns.output | json }}"
-        updated_at: "{{ execution.startedAt }}"
-    on-failure:
-      continue: true
+      detections: "${{ steps.detect_defunct_callsigns.output }}"

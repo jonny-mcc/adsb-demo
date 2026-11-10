@@ -9,14 +9,6 @@
           }
         }
       },
-      "frozen": {
-        "min_age": "14d",
-        "actions": {
-          "searchable_snapshot": {
-            "snapshot_repository": "found-snapshots"
-          }
-        }
-      },
       "delete": {
         "min_age": "730d",
         "actions": {

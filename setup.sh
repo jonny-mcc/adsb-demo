@@ -11,7 +11,8 @@ cd "$SCRIPT_DIR"
 FORCE=false
 SKIP_SERVICE_USER=false
 SELECTED_GROUPS=""
-ALL_GROUPS="space ilm indices enrich pipelines kibana cases workflows tools skills agents demouser"
+AVAILABLE_GROUPS="ingestkey space ilm indices enrich pipelines kibana cases workflows tools skills agents demouser"
+DEFAULT_GROUPS="space indices enrich pipelines kibana cases workflows tools skills agents demouser"
 
 usage() {
   cat <<EOF
@@ -34,8 +35,9 @@ even when --only is used to select a subset of groups.
 
 Options:
   --only GROUP[,GROUP]  Run only the specified groups (comma-separated).
-                        Available groups: ${ALL_GROUPS}
+                        Available groups: ${AVAILABLE_GROUPS}
   --force               Overwrite existing resources instead of skipping them.
+  --create-ingest-key   Create a least-privilege ingest API key and exit.
   --no-service-user     Skip service user creation; run everything under the
                         original API key from .env.
   --help                Show this help message.
@@ -45,6 +47,7 @@ Examples:
   ./setup.sh --only agents,workflows       Re-deploy agents and workflows only
   ./setup.sh --only workflows,tools,skills Re-deploy workflows, tools, and skills
   ./setup.sh --only kibana --force         Reset dashboards to source-controlled versions
+  ./setup.sh --create-ingest-key            Print a dedicated ingest key for .env
   ./setup.sh --force                       Overwrite everything
   ./setup.sh --no-service-user             Run all groups without service user
 EOF
@@ -54,6 +57,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) FORCE=true; shift ;;
+    --create-ingest-key) SELECTED_GROUPS="ingestkey"; SKIP_SERVICE_USER=true; shift ;;
     --only)  SELECTED_GROUPS="$2"; shift 2 ;;
     --no-service-user) SKIP_SERVICE_USER=true; shift ;;
     --help)  usage ;;
@@ -62,12 +66,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$SELECTED_GROUPS" ]]; then
-  SELECTED_GROUPS="$ALL_GROUPS"
+  SELECTED_GROUPS="$DEFAULT_GROUPS"
 else
   SELECTED_GROUPS="${SELECTED_GROUPS//,/ }"
   for g in $SELECTED_GROUPS; do
-    if ! echo "$ALL_GROUPS" | grep -qw "$g"; then
-      echo "ERROR: Unknown group '$g'. Available: $ALL_GROUPS" >&2
+    if ! echo "$AVAILABLE_GROUPS" | grep -qw "$g"; then
+      echo "ERROR: Unknown group '$g'. Available: $AVAILABLE_GROUPS" >&2
       exit 1
     fi
   done
@@ -79,10 +83,11 @@ group_enabled() { echo "$SELECTED_GROUPS" | grep -qw "$1"; }
 # Environment
 # ---------------------------------------------------------------------------
 
-if [[ -f .env ]]; then
-  set -a; source .env; set +a
+ENV_FILE="${ENV_FILE:-.env}"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a; source "$ENV_FILE"; set +a
 else
-  echo "ERROR: .env file not found in $SCRIPT_DIR" >&2
+  echo "ERROR: Environment file not found: $ENV_FILE" >&2
   echo "Copy .env.example to .env and fill in your credentials first." >&2
   exit 1
 fi
@@ -98,6 +103,7 @@ BASE="${ES_ENDPOINT%/}"
 KB_BASE="${KB_ENDPOINT%/}"
 KB_BASE_NO_SPACE="$KB_BASE"
 [[ -n "${KB_SPACE:-}" ]] && KB_BASE="${KB_BASE}/s/${KB_SPACE}"
+SETUP_API_KEY_ENCODED="$ES_API_KEY_ENCODED"
 
 if ! command -v jq &>/dev/null; then
   echo "ERROR: jq is required but not installed." >&2
@@ -111,11 +117,13 @@ fi
 
 group_step_count() {
   case "$1" in
+    ingestkey) echo 1 ;;
     space) echo 1 ;;  ilm)       echo 1 ;;
     indices) echo 9 ;; enrich)   echo 4 ;;
     pipelines) echo 2 ;; kibana) echo 1 ;;
     cases) echo 1 ;;  agents)    echo 3 ;;
-    workflows) echo 19 ;;
+    workflows) echo 14 ;; tools) echo 15 ;;
+    skills) echo 7 ;; demouser) echo 1 ;;
     *) echo 0 ;;
   esac
 }
@@ -223,26 +231,20 @@ setup_serviceuser() {
   local svc_pass
   svc_pass="$(openssl rand -base64 32)"
 
-  local role_payload='{
-    "cluster": ["manage", "manage_security"],
-    "indices": [
-      {
-        "names": ["geo.shapes-world.countries-50m", "adsb*", "demos-aircraft-adsb*"],
-        "privileges": ["create_index", "write", "read", "view_index_metadata", "manage"]
-      },
-      {
-        "names": ["fm-clone-*"],
-        "privileges": ["manage", "view_index_metadata"]
-      }
-    ],
-    "applications": [
-      {
-        "application": "kibana-.kibana",
-        "privileges": ["all"],
-        "resources": ["*"]
-      }
-    ]
-  }'
+  local role_payload kibana_resource
+  kibana_resource="space:${KB_SPACE:-default}"
+  role_payload=$(jq -n --arg resource "$kibana_resource" '{
+    cluster: ["manage", "manage_own_api_key"],
+    indices: [{
+      names: ["geo.shapes-world.countries-50m", "adsb*", "demos-aircraft-adsb*"],
+      privileges: ["create_index", "write", "read", "view_index_metadata", "manage"]
+    }],
+    applications: [{
+      application: "kibana-.kibana",
+      privileges: ["all"],
+      resources: [$resource]
+    }]
+  }')
 
   # Create role
   local role_tmp role_http
@@ -297,6 +299,20 @@ setup_serviceuser() {
   fi
   rm -f "$user_tmp"
 
+  # Avoid accumulating a new session key on every idempotent setup run.
+  local invalidate_tmp invalidate_http
+  invalidate_tmp=$(mktemp)
+  invalidate_http=$(curl -s -w '%{http_code}' -o "$invalidate_tmp" \
+    -u "${svc_user}:${svc_pass}" \
+    -X DELETE "$BASE/_security/api_key" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "adsb-automation-session"}')
+  if [[ "$invalidate_http" -lt 200 || "$invalidate_http" -ge 300 ]]; then
+    echo "  WARNING (HTTP $invalidate_http): Could not invalidate the previous automation session key." >&2
+    cat "$invalidate_tmp" >&2
+  fi
+  rm -f "$invalidate_tmp"
+
   # Mint API key as the service user (inherits role privileges)
   local key_tmp key_http
   key_tmp=$(mktemp)
@@ -326,6 +342,49 @@ setup_serviceuser() {
 
   ES_API_KEY_ENCODED="$new_encoded"
   echo "  Using service user 'adsb-automation' for all subsequent operations"
+}
+
+setup_ingestkey() {
+  step_label "Creating least-privilege ingest API key"
+
+  local key_tmp key_http
+  key_tmp=$(mktemp)
+  key_http=$(curl -s -w '%{http_code}' -o "$key_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    -X POST "$BASE/_security/api_key" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "name": "adsb-ingest",
+      "role_descriptors": {
+        "adsb_ingest": {
+          "cluster": ["monitor"],
+          "indices": [{
+            "names": ["demos-aircraft-adsb*"],
+            "privileges": ["auto_configure", "create_doc", "view_index_metadata"]
+          }]
+        }
+      }
+    }')
+
+  if [[ "$key_http" -lt 200 || "$key_http" -ge 300 ]]; then
+    echo "  FAILED (HTTP $key_http):" >&2
+    cat "$key_tmp" >&2
+    rm -f "$key_tmp"
+    exit 1
+  fi
+
+  local key_id key_value
+  key_id=$(jq -r '.id // empty' "$key_tmp")
+  key_value=$(jq -r '.api_key // empty' "$key_tmp")
+  rm -f "$key_tmp"
+  if [[ -z "$key_id" || -z "$key_value" ]]; then
+    echo "  FAILED: API key response did not contain id and api_key." >&2
+    exit 1
+  fi
+
+  echo "  Created. Add these values to .env (the secret is shown only once):"
+  echo "ES_INGEST_API_KEY_ID=$key_id"
+  echo "ES_INGEST_API_KEY=$key_value"
 }
 
 # ---------------------------------------------------------------------------
@@ -367,7 +426,7 @@ setup_space() {
     local space_tmp space_http
     space_tmp=$(mktemp)
     space_http=$(curl -s -w '%{http_code}' -o "$space_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "Authorization: ApiKey $SETUP_API_KEY_ENCODED" \
       -X POST "$KB_BASE_NO_SPACE/api/spaces/space" \
       -H "kbn-xsrf: true" \
       -H "Content-Type: application/json" \
@@ -392,13 +451,24 @@ setup_space() {
 setup_ilm() {
   step_label "Creating ILM policy 'adsb-lifecycle'"
 
+  local ilm_payload_file=""
+  local repo_code
+  repo_code=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/_snapshot/found-snapshots")
+  if [[ "$repo_code" != "200" ]]; then
+    ilm_payload_file=$(mktemp)
+    jq 'del(.policy.phases.frozen)' elasticsearch/indices/adsb-ilm-policy.json > "$ilm_payload_file"
+    echo "  Searchable-snapshot repository unavailable — omitting frozen phase"
+  fi
+
   local tmp_file http_code
   tmp_file=$(mktemp)
   http_code=$(curl -s -w '%{http_code}' -o "$tmp_file" \
     -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
     -X PUT "$BASE/_ilm/policy/adsb-lifecycle" \
     -H "Content-Type: application/json" \
-    -d @elasticsearch/indices/adsb-ilm-policy.json)
+    -d "@${ilm_payload_file:-elasticsearch/indices/adsb-ilm-policy.json}")
 
   if [[ "$http_code" == "400" || "$http_code" == "404" ]]; then
     echo "  Skipped — ILM not available on this deployment (HTTP $http_code)"
@@ -411,7 +481,7 @@ setup_ilm() {
   else
     echo "  OK (HTTP $http_code)"
   fi
-  rm -f "$tmp_file"
+  rm -f "$tmp_file" "$ilm_payload_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -485,6 +555,45 @@ setup_index() {
       return 0
     fi
     echo "  Document count differs (index: $actual, file: $expected) — reloading"
+    local delete_tmp delete_code
+    delete_tmp=$(mktemp)
+    delete_code=$(curl -s -w '%{http_code}' -o "$delete_tmp" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -X POST "$BASE/$index_name/_delete_by_query?conflicts=proceed&refresh=true" \
+      -H "Content-Type: application/json" \
+      -d '{"query":{"match_all":{}}}')
+    if [[ "$delete_code" -lt 200 || "$delete_code" -ge 300 ]]; then
+      echo "  FAILED to clear stale reference data (HTTP $delete_code):" >&2
+      cat "$delete_tmp" >&2
+      rm -f "$delete_tmp"
+      exit 1
+    fi
+    rm -f "$delete_tmp"
+  fi
+
+  local bulk_data_file="$data_file" generated_bulk_file=""
+  if [[ "$index_name" == "adsb-airports-geo" ]]; then
+    generated_bulk_file=$(mktemp)
+    jq -cn --arg index "$index_name" '
+      foreach inputs as $line (
+        {line: 0};
+        .line += 1
+        | if (.line % 2) == 1 then .action = $line else .document = $line end;
+        if (.line % 2) == 0 then
+          {"index": {
+            "_index": $index,
+            "_id": (
+              .document.ne_id
+              // .document.gps_code
+              // .document.iata_code
+              | tostring
+            )
+          }},
+          .document
+        else empty end
+      )
+    ' "$data_file" > "$generated_bulk_file"
+    bulk_data_file="$generated_bulk_file"
   fi
 
   local bulk_tmp bulk_code
@@ -493,16 +602,26 @@ setup_index() {
     -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
     -X POST "$BASE/$index_name/_bulk" \
     -H "Content-Type: application/x-ndjson" \
-    --data-binary "@$data_file")
+    --data-binary "@$bulk_data_file")
 
   if [[ "$bulk_code" -lt 200 || "$bulk_code" -ge 300 ]]; then
     echo "  FAILED (HTTP $bulk_code):" >&2
     cat "$bulk_tmp" >&2
-    rm -f "$bulk_tmp"
+    rm -f "$bulk_tmp" "$generated_bulk_file"
     exit 1
   fi
-  echo "  OK (HTTP $bulk_code)"
-  rm -f "$bulk_tmp"
+  if jq -e '.errors == true' "$bulk_tmp" >/dev/null 2>&1; then
+    echo "  FAILED: bulk request contained item errors:" >&2
+    jq -r '
+      [.items[] | to_entries[] | select(.value.error) |
+       "\(.key) \(.value._id // "?"): \(.value.status) \(.value.error.type): \(.value.error.reason)"]
+      | .[:10][]
+    ' "$bulk_tmp" >&2
+    rm -f "$bulk_tmp" "$generated_bulk_file"
+    exit 1
+  fi
+  echo "  OK (HTTP $bulk_code) — $(jq -r '.items | length' "$bulk_tmp") documents indexed"
+  rm -f "$bulk_tmp" "$generated_bulk_file"
 
   step_label "Refreshing $label index"
   local ref_tmp ref_code
@@ -631,7 +750,7 @@ setup_enrich() {
   setup_enrich_policy \
     "adsb-airport-proximity" \
     "elasticsearch/enrich/adsb-airport-enrich-policy.json" \
-    "airport proximity"
+    "airport coverage zone"
 }
 
 # ---------------------------------------------------------------------------
@@ -644,10 +763,65 @@ setup_pipelines() {
     -H "Content-Type: application/json" \
     -d @elasticsearch/pipelines/adsb-ingest-pipeline.json
 
+  local template_payload="elasticsearch/indices/adsb-index-template.json"
+  local generated_template=""
+  if [[ -n "${DLM_FROZEN_AFTER:-}" ]]; then
+    local license_type repository_count
+    license_type=$(curl -s \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      "$BASE/_license" | jq -r '.license.type // empty' 2>/dev/null || true)
+    repository_count=$(curl -s \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      "$BASE/_snapshot/_all" | jq 'if type == "object" and (.error | not) then length else 0 end' 2>/dev/null || echo 0)
+    if [[ "$license_type" =~ ^(enterprise|trial)$ && "$repository_count" -gt 0 ]]; then
+      generated_template=$(mktemp)
+      jq --arg frozen_after "$DLM_FROZEN_AFTER" \
+        '.template.lifecycle.frozen_after = $frozen_after' \
+        "$template_payload" > "$generated_template"
+      template_payload="$generated_template"
+      echo "  Enabling DLM frozen transition after $DLM_FROZEN_AFTER"
+    else
+      echo "  DLM frozen transition skipped — Enterprise licence and a snapshot repository are required"
+    fi
+  fi
   run_curl "Creating index template" \
     -X PUT "$BASE/_index_template/demos-aircraft-adsb" \
     -H "Content-Type: application/json" \
-    -d @elasticsearch/indices/adsb-index-template.json
+    -d "@$template_payload"
+  rm -f "$generated_template"
+
+  local historical_settings="elasticsearch/indices/adsb-historical-import-cluster-settings.json"
+  local historical_tmp historical_http
+  historical_tmp=$(mktemp)
+  if [[ "${ENABLE_HISTORICAL_TSDS_IMPORT:-false}" == "true" ]]; then
+    if [[ -f "$historical_settings" ]]; then
+      historical_http=$(curl -s -w '%{http_code}' -o "$historical_tmp" \
+        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+        -H "Content-Type: application/json" \
+        -X PUT "$BASE/_cluster/settings" \
+        -d "@$historical_settings")
+      if [[ "$historical_http" -ge 200 && "$historical_http" -lt 300 ]]; then
+        echo "  Historical TSDS import window enabled (cluster-wide opt-in)"
+      else
+        echo "  WARNING (HTTP $historical_http): Historical TSDS import is unsupported on this deployment." >&2
+        cat "$historical_tmp" >&2
+      fi
+    else
+      echo "  WARNING: Historical TSDS settings asset is not present — skipping." >&2
+    fi
+  else
+    historical_http=$(curl -s -w '%{http_code}' -o "$historical_tmp" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "Content-Type: application/json" \
+      -X PUT "$BASE/_cluster/settings" \
+      -d '{"persistent":{"data_stream.past_tsdb_index_creation_enabled":null,"data_streams.past_tsdb_index_interval":null}}')
+    if [[ "$historical_http" -ge 200 && "$historical_http" -lt 300 ]]; then
+      echo "  Historical TSDS import window disabled"
+    else
+      echo "  Historical TSDS import setting unavailable on this deployment (HTTP $historical_http)"
+    fi
+  fi
+  rm -f "$historical_tmp"
 }
 
 # ---------------------------------------------------------------------------
@@ -698,13 +872,38 @@ setup_kibana() {
       ok_count=$(jq -r '.successCount // 0' < "$import_tmp" 2>/dev/null || echo "0")
       skipped_count=$(jq -r '.errors // [] | length' < "$import_tmp" 2>/dev/null || echo "0")
       echo "  OK (HTTP $import_http) — $ok_count imported, $skipped_count skipped (already exist)"
-      rm -f "$import_tmp"
-      return 0
     fi
+  else
+    echo "  OK (HTTP $import_http) — $(jq -r '.successCount // "?"' < "$import_tmp" || echo "?") objects imported"
   fi
 
-  echo "  OK (HTTP $import_http) — $(jq -r '.successCount // "?"' < "$import_tmp" || echo "?") objects imported"
   rm -f "$import_tmp"
+
+  step_label "Deploying ADS-B operations dashboard as code"
+  local dashboard_id="adsb-operations-cases"
+  local dashboard_file="elasticsearch/kibana/adsb-operations-dashboard.json"
+  local dashboard_tmp dashboard_http dashboard_payload case_space_id
+  case_space_id="${KB_SPACE:-default}"
+  dashboard_payload=$(sed "s|__KB_SPACE_ID__|${case_space_id}|g" "$dashboard_file")
+  dashboard_tmp=$(mktemp)
+  dashboard_http=$(curl -s -w '%{http_code}' -o "$dashboard_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    -H "kbn-xsrf: true" \
+    -H "x-elastic-internal-origin: kibana" \
+    -H "Content-Type: application/json" \
+    -X PUT "$KB_BASE/api/dashboards/$dashboard_id" \
+    -d "$dashboard_payload")
+  if [[ "$dashboard_http" -ge 200 && "$dashboard_http" -lt 300 ]]; then
+    echo "  OK (HTTP $dashboard_http) — dashboard ID: $dashboard_id"
+  elif [[ "$dashboard_http" == "404" ]]; then
+    echo "  Skipped — the Dashboards API requires Kibana 9.5+"
+  else
+    echo "  FAILED (HTTP $dashboard_http):" >&2
+    cat "$dashboard_tmp" >&2
+    rm -f "$dashboard_tmp"
+    exit 1
+  fi
+  rm -f "$dashboard_tmp"
 }
 
 # ---------------------------------------------------------------------------
@@ -713,6 +912,32 @@ setup_kibana() {
 
 setup_cases() {
   step_label "Configuring case custom fields and templates"
+
+  local fields_file="elasticsearch/cases/field-definitions.json"
+  local field_count field_index field_tmp field_http
+  field_count=$(jq 'length' "$fields_file")
+  for ((field_index = 0; field_index < field_count; field_index++)); do
+    field_tmp=$(mktemp)
+    field_http=$(curl -s -w '%{http_code}' -o "$field_tmp" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "kbn-xsrf: true" \
+      -H "Content-Type: application/json" \
+      -X POST "$KB_BASE/api/cases/field_definitions" \
+      -d "$(jq -c ".[$field_index]" "$fields_file")")
+    if [[ "$field_http" -ge 200 && "$field_http" -lt 300 ]]; then
+      echo "  Created Case field: $(jq -r ".[$field_index].name" "$fields_file")"
+    elif [[ "$field_http" == "409" ]]; then
+      echo "  Case field already exists: $(jq -r ".[$field_index].name" "$fields_file")"
+    elif [[ "$field_http" == "404" ]]; then
+      echo "  Case field library unavailable on this deployment — using legacy custom fields"
+      rm -f "$field_tmp"
+      break
+    else
+      echo "  WARNING (HTTP $field_http): Could not create Case field definition." >&2
+      cat "$field_tmp" >&2
+    fi
+    rm -f "$field_tmp"
+  done
 
   local config_file="elasticsearch/cases/observability-config.json"
 
@@ -793,7 +1018,7 @@ setup_cases() {
 # ---------------------------------------------------------------------------
 
 deploy_agent() {
-  local agent_id="$1" agent_file="$2" label="$3"
+  local agent_id="$1" agent_file="$2" label="$3" always_update="${4:-false}"
 
   step_label "Deploying $label"
 
@@ -802,7 +1027,7 @@ deploy_agent() {
   local agent_body_no_id
   agent_body_no_id=$(jq 'del(.id)' "$agent_file")
 
-  if [[ "$FORCE" == "true" ]]; then
+  if [[ "$FORCE" == "true" || "$always_update" == "true" ]]; then
     local agent_tmp agent_http
     agent_tmp=$(mktemp)
     agent_http=$(curl -s -w '%{http_code}' -o "$agent_tmp" \
@@ -885,993 +1110,423 @@ setup_agents() {
   deploy_agent \
     "adsb_hijack_assessment_agent" \
     "elasticsearch/agents/adsb-hijack-assessment-agent.json" \
-    "hijack assessment agent"
+    "hijack assessment agent" \
+    "true"
+
+  if [[ -n "${HIJACK_AGENT_ALLOWED_USERS:-}${HIJACK_AGENT_EDITORS:-}${HIJACK_AGENT_MANAGERS:-}" ]]; then
+    step_label "Restricting hijack assessment agent access"
+    local acl_entries acl_tmp acl_http
+    acl_entries=$(jq -n \
+      --arg users "${HIJACK_AGENT_ALLOWED_USERS:-}" \
+      --arg editors "${HIJACK_AGENT_EDITORS:-}" \
+      --arg managers "${HIJACK_AGENT_MANAGERS:-}" '
+      def entries($names; $role):
+        $names
+        | split(",")
+        | map(gsub("^\\s+|\\s+$"; ""))
+        | map(select(length > 0))
+        | map({type: "user", name: ., role: $role});
+      entries($users; "user")
+      + entries($editors; "editor")
+      + entries($managers; "manager")
+    ')
+    acl_tmp=$(mktemp)
+    acl_http=$(curl -s -w '%{http_code}' -o "$acl_tmp" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "kbn-xsrf: true" \
+      -H "Content-Type: application/json" \
+      -X PUT "$KB_BASE/api/agent_builder/agents/adsb_hijack_assessment_agent/access_control" \
+      -d "$(jq -n --argjson entries "$acl_entries" '{entries: $entries}')")
+    if [[ "$acl_http" -ge 200 && "$acl_http" -lt 300 ]]; then
+      echo "  Private access configured for $(jq 'length' <<< "$acl_entries") user(s)"
+    elif [[ "$acl_http" == "404" ]]; then
+      echo "  Skipped — per-agent access control requires Kibana 9.5+"
+    else
+      echo "  WARNING (HTTP $acl_http): Could not configure agent access control." >&2
+      cat "$acl_tmp" >&2
+    fi
+    rm -f "$acl_tmp"
+  fi
 }
 
 # ---------------------------------------------------------------------------
 # Group: workflows
 # ---------------------------------------------------------------------------
 
+prepare_workflow() {
+  local workflow_id="$1" workflow_name="$2" workflow_file="$3"
+  local dashboard_world_id="$4" dashboard_detail_id="$5"
+  local space_prefix="$6" gnews_connector_id="$7"
+
+  step_label "Preparing $workflow_name workflow"
+
+  local yaml_content
+  yaml_content=$(sed \
+    -e "s|__KB_ENDPOINT__|${KB_BASE}|g" \
+    -e "s|__SPACE_PREFIX__|${space_prefix}|g" \
+    -e "s|__SLACK_CONNECTOR_ID__|${SLACK_CONNECTOR_ID:-d85ca362-fb82-56f6-867c-4ef2c356d912}|g" \
+    -e "s|__DASHBOARD_WORLD_OVERVIEW_ID__|${dashboard_world_id}|g" \
+    -e "s|__DASHBOARD_AIRCRAFT_DETAIL_ID__|${dashboard_detail_id}|g" \
+    -e 's|&apikey=__GNEWS_API_KEY__||g' \
+    "$workflow_file")
+
+  if [[ -n "$gnews_connector_id" ]] && grep -q 'gnews.io/api/v4/search' <<< "$yaml_content"; then
+    yaml_content=$(awk -v connector_id="$gnews_connector_id" '
+      /- name: news_search/ { in_news = 1 }
+      in_news && /^[[:space:]]*type: http$/ {
+        print
+        match($0, /^[[:space:]]*/)
+        indent = substr($0, 1, RLENGTH)
+        print indent "connector-id: \"" connector_id "\""
+        next
+      }
+      in_news && /url: "https:\/\/gnews.io\/api\/v4\/search/ {
+        match($0, /^[[:space:]]*/)
+        indent = substr($0, 1, RLENGTH)
+        print indent "path: \"/api/v4/search\""
+        print indent "query:"
+        if ($0 ~ /inputs.callsign/) {
+          print indent "  q: \"{{ inputs.callsign }} hijack\""
+        } else {
+          print indent "  q: \"{{ event.alerts[0].kibana.alert.grouping.callsign }} hijack\""
+        }
+        print indent "  max: \"5\""
+        next
+      }
+      in_news && /^[[:space:]]*on-failure:/ { in_news = 0 }
+      { print }
+    ' <<< "$yaml_content")
+  fi
+
+  WORKFLOW_BULK_PAYLOAD=$(jq \
+    --arg id "$workflow_id" --arg yaml "$yaml_content" \
+    '.workflows += [{id: $id, yaml: $yaml}]' \
+    <<< "$WORKFLOW_BULK_PAYLOAD")
+}
+
+deploy_workflow_batch() {
+  step_label "Deploying source-controlled workflows"
+
+  local payload="$WORKFLOW_BULK_PAYLOAD" tmp http existing_ids
+  tmp=$(mktemp)
+
+  if [[ "$FORCE" != "true" ]]; then
+    http=$(curl -s -w '%{http_code}' -o "$tmp" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "kbn-xsrf: true" \
+      -H "x-elastic-internal-origin: kibana" \
+      -H "Content-Type: application/json" \
+      -X POST "$KB_BASE/api/workflows?dryRun=true" \
+      -d "$payload")
+    if [[ "$http" -lt 200 || "$http" -ge 300 ]]; then
+      echo "  FAILED preflight (HTTP $http):" >&2
+      cat "$tmp" >&2
+      rm -f "$tmp"
+      exit 1
+    fi
+    existing_ids=$(jq -c '.existingIds // []' "$tmp")
+    payload=$(jq --argjson existing "$existing_ids" \
+      '.workflows |= map(select(.id as $id | $existing | index($id) | not))' \
+      <<< "$payload")
+    if [[ "$(jq '.workflows | length' <<< "$payload")" == "0" ]]; then
+      echo "  All source-controlled workflow IDs already exist — skipping"
+      rm -f "$tmp"
+      return 0
+    fi
+  fi
+
+  local overwrite=""
+  [[ "$FORCE" == "true" ]] && overwrite="?overwrite=true"
+  http=$(curl -s -w '%{http_code}' -o "$tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    -H "kbn-xsrf: true" \
+    -H "x-elastic-internal-origin: kibana" \
+    -H "Content-Type: application/json" \
+    -X POST "$KB_BASE/api/workflows${overwrite}" \
+    -d "$payload")
+
+  if [[ "$http" -lt 200 || "$http" -ge 300 ]] || [[ "$(jq '.failed | length // 0' "$tmp" 2>/dev/null)" != "0" ]]; then
+    echo "  FAILED bulk workflow deployment (HTTP $http):" >&2
+    cat "$tmp" >&2
+    rm -f "$tmp"
+    exit 1
+  fi
+  echo "  OK (HTTP $http) — created $(jq '.created | length // 0' "$tmp") workflow(s)"
+  rm -f "$tmp"
+}
+
 setup_workflows() {
-  # --- Extract dashboard IDs from ndjson (used in workflow placeholders + alert rule) ---
-  local DASHBOARD_WORLD_OVERVIEW_ID DASHBOARD_AIRCRAFT_DETAIL_ID
-  DASHBOARD_WORLD_OVERVIEW_ID=$(jq -r \
+  local dashboard_world_id dashboard_detail_id space_prefix=""
+  dashboard_world_id=$(jq -r \
     'select(.type == "dashboard" and .attributes.title == "Aircraft World Overview") | .id' \
     elasticsearch/kibana/adsb-saved-objects.ndjson | head -1)
-  DASHBOARD_AIRCRAFT_DETAIL_ID=$(jq -r \
+  dashboard_detail_id=$(jq -r \
     'select(.type == "dashboard" and .attributes.title == "Aircraft Detail") | .id' \
     elasticsearch/kibana/adsb-saved-objects.ndjson | head -1)
+  [[ -n "${KB_SPACE:-}" ]] && space_prefix="/s/${KB_SPACE}"
 
-  # --- Create Slack connector (conditional) ---
-  step_label "Configuring Slack connector"
-
+  step_label "Configuring notification and news connectors"
+  local slack_connector_id="${SLACK_CONNECTOR_ID:-d85ca362-fb82-56f6-867c-4ef2c356d912}"
   if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
-    local slack_check slack_check_code
-    local slack_connector_id="d85ca362-fb82-56f6-867c-4ef2c356d912"
-    slack_check=$(curl_kb -X GET "$KB_BASE/api/actions/connector/$slack_connector_id" 2>/dev/null)
-    slack_check_code=$(http_code_of "$slack_check")
+    local slack_payload slack_check_code
+    slack_payload=$(jq -n --arg url "$SLACK_WEBHOOK_URL" \
+      '{connector_type_id: ".slack", name: "ADS-B Daily Briefing", secrets: {webhookUrl: $url}}')
+    slack_check_code=$(curl -s -o /dev/null -w '%{http_code}' \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      "$KB_BASE/api/actions/connector/$slack_connector_id")
+    if [[ "$slack_check_code" == "200" && "$FORCE" != "true" ]]; then
+      echo "  Slack connector already exists — skipping"
+    else
+      local slack_method="POST"
+      [[ "$slack_check_code" == "200" ]] && slack_method="PUT"
+      warn_on_fail "Saving Slack connector" \
+        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+        -H "kbn-xsrf: true" \
+        -H "Content-Type: application/json" \
+        -X "$slack_method" "$KB_BASE/api/actions/connector/$slack_connector_id" \
+        -d "$(if [[ "$slack_method" == "PUT" ]]; then jq 'del(.connector_type_id)' <<< "$slack_payload"; else printf '%s' "$slack_payload"; fi)"
+    fi
+  else
+    echo "  Slack skipped (SLACK_WEBHOOK_URL not set)"
+  fi
 
-    if [[ "$slack_check_code" == "200" ]]; then
+  local gnews_connector_id=""
+  if [[ -n "${GNEWS_API_KEY:-}" ]]; then
+    gnews_connector_id="${GNEWS_CONNECTOR_ID:-6e45c45d-cb6d-5e4c-a9f4-3b09b9677500}"
+    local gnews_tmp gnews_http gnews_payload_file gnews_update_file
+    gnews_tmp=$(mktemp)
+    gnews_payload_file=$(mktemp)
+    gnews_update_file=$(mktemp)
+    jq -n --arg key "$GNEWS_API_KEY" '{
+      connector_type_id: ".http",
+      name: "ADS-B GNews Search",
+      config: {url: "https://gnews.io", headers: null, hasAuth: false},
+      secrets: {secretQueryParams: {apikey: $key}}
+    }' > "$gnews_payload_file"
+    jq 'del(.connector_type_id)' "$gnews_payload_file" > "$gnews_update_file"
+    gnews_http=$(curl -s -w '%{http_code}' -o "$gnews_tmp" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "kbn-xsrf: true" \
+      -H "Content-Type: application/json" \
+      -X POST "$KB_BASE/api/actions/connector/$gnews_connector_id" \
+      -d "@$gnews_payload_file")
+    if [[ "$gnews_http" == "409" ]] || grep -q "already exists" "$gnews_tmp"; then
       if [[ "$FORCE" == "true" ]]; then
-        echo "  Connector exists — updating (--force)"
-        local slack_tmp slack_http
-        slack_tmp=$(mktemp)
-        slack_http=$(curl -s -w '%{http_code}' -o "$slack_tmp" \
+        gnews_http=$(curl -s -w '%{http_code}' -o "$gnews_tmp" \
           -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-          -X PUT "$KB_BASE/api/actions/connector/$slack_connector_id" \
           -H "kbn-xsrf: true" \
           -H "Content-Type: application/json" \
-          -d "$(jq -n --arg url "$SLACK_WEBHOOK_URL" '{name: "ADS-B Daily Briefing", secrets: {webhookUrl: $url}}')")
-        if [[ "$slack_http" -lt 200 || "$slack_http" -ge 300 ]]; then
-          echo "  WARNING (HTTP $slack_http): Could not update Slack connector." >&2
-          cat "$slack_tmp" >&2
-        else
-          echo "  Updated (HTTP $slack_http)"
-        fi
-        rm -f "$slack_tmp"
+          -X PUT "$KB_BASE/api/actions/connector/$gnews_connector_id" \
+          -d "@$gnews_update_file")
       else
-        echo "  Already exists — skipping"
+        gnews_http=200
       fi
-    else
-      echo "  Creating Slack connector ..."
-      local slack_tmp slack_http
-      slack_tmp=$(mktemp)
-      slack_http=$(curl -s -w '%{http_code}' -o "$slack_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X POST "$KB_BASE/api/actions/connector/$slack_connector_id" \
-        -H "kbn-xsrf: true" \
-        -H "Content-Type: application/json" \
-        -d "$(jq -n --arg url "$SLACK_WEBHOOK_URL" '{connector_type_id: ".slack", name: "ADS-B Daily Briefing", secrets: {webhookUrl: $url}}')")
-      if [[ "$slack_http" -lt 200 || "$slack_http" -ge 300 ]]; then
-        echo "  WARNING (HTTP $slack_http): Could not create Slack connector." >&2
-        echo "  Configure it manually in Kibana > Stack Management > Connectors." >&2
-        cat "$slack_tmp" >&2
-      else
-        echo "  Created (HTTP $slack_http)"
-      fi
-      rm -f "$slack_tmp"
     fi
+    if [[ "$gnews_http" -lt 200 || "$gnews_http" -ge 300 ]]; then
+      echo "  WARNING (HTTP $gnews_http): secure GNews connector unavailable; news search disabled." >&2
+      cat "$gnews_tmp" >&2
+      gnews_connector_id=""
+    else
+      echo "  GNews API key stored in encrypted connector secrets"
+    fi
+    rm -f "$gnews_tmp" "$gnews_payload_file" "$gnews_update_file"
   else
-    echo "  Skipped (SLACK_WEBHOOK_URL not set)"
-    echo "  To enable Slack notifications, add SLACK_WEBHOOK_URL to .env"
-    echo "  or create the connector manually in Kibana > Stack Management > Connectors."
+    echo "  GNews skipped (GNEWS_API_KEY not set)"
   fi
 
-  # --- Create squawk 7500 alerting rule ---
+  local hijack_workflow_id="adsb-squawk-7500-hijack-investigation"
+  local WORKFLOW_BULK_PAYLOAD='{"workflows":[]}'
+  prepare_workflow \
+    "adsb-squawk-7500-hijack-investigation" \
+    "Squawk 7500 Hijack Investigation" \
+    "elasticsearch/workflows/squawk-7500-hijack-investigation.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+
+  prepare_workflow "adsb-daily-flight-briefing" "Daily Flight Briefing" \
+    "elasticsearch/workflows/daily-flight-briefing.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  prepare_workflow "adsb-squawk-7500-enrich" "Squawk 7500 Enrich" \
+    "elasticsearch/workflows/squawk-7500-enrich.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  prepare_workflow "adsb-squawk-7500-create-case" "Squawk 7500 Create Case" \
+    "elasticsearch/workflows/squawk-7500-create-case.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  prepare_workflow "adsb-aggregate-stats" "ADS-B Aggregate Stats" \
+    "elasticsearch/workflows/adsb-aggregate-stats.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  prepare_workflow "adsb-aircraft-history" "ADS-B Aircraft History Report" \
+    "elasticsearch/workflows/adsb-aircraft-history.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  prepare_workflow "adsb-airport-activity" "ADS-B Airport Activity Report" \
+    "elasticsearch/workflows/adsb-airport-activity.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  prepare_workflow "adsb-hijack-cases-summary" "Hijack Cases Summary" \
+    "elasticsearch/workflows/hijack-cases-summary.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  prepare_workflow "adsb-defunct-callsign-detector" "Defunct Callsign Detector" \
+    "elasticsearch/workflows/adsb-defunct-callsign-detector.yaml" \
+    "$dashboard_world_id" "$dashboard_detail_id" "$space_prefix" "$gnews_connector_id"
+  deploy_workflow_batch
+
   step_label "Creating squawk 7500 alerting rule"
-
-  # Pre-resolve the hijack workflow ID so we can wire the action at create time
-  local hijack_wf_id_for_rule=""
-  local _pre_wf_tmp
-  _pre_wf_tmp=$(mktemp)
-  if curl -s -w '%{http_code}' -o "$_pre_wf_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows" 2>/dev/null | grep -q '^2'; then
-    hijack_wf_id_for_rule=$(jq -r '(.workflows // .results // [])[] | select(.name == "Squawk 7500 Hijack Investigation") | .id' < "$_pre_wf_tmp" 2>/dev/null | head -1 || true)
-  fi
-  rm -f "$_pre_wf_tmp"
-  if [[ -n "$hijack_wf_id_for_rule" ]]; then
-    echo "  Resolved workflow ID for action: $hijack_wf_id_for_rule"
-  else
-    echo "  Workflow not yet deployed — rule will be created without workflow action"
-  fi
-
-  local rule_id="7500a1e7-cafe-4bee-b500-deadbeef7500"
-  local rule_needs_create=true
-
-  local rule_check rule_check_code
-  rule_check=$(curl_kb -X GET "$KB_BASE/api/alerting/rule/$rule_id" 2>/dev/null)
-  rule_check_code=$(http_code_of "$rule_check")
-
-  if [[ "$rule_check_code" == "200" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Rule exists — recreating (--force)"
-      curl_kb -X DELETE "$KB_BASE/api/alerting/rule/$rule_id" > /dev/null 2>&1
-    else
-      echo "  Already exists — skipping"
-      rule_needs_create=false
-    fi
-  fi
-
-  if [[ "$rule_needs_create" == "true" ]]; then
-    local rule_payload
-    local esql_query='FROM demos-aircraft-adsb | WHERE squawk == "7500" | KEEP @timestamp, icao24, callsign, squawk, origin_country, latitude, longitude, baro_altitude, velocity, true_track, vertical_rate, on_ground, geo_altitude | LIMIT 100'
-    rule_payload=$(jq -n --arg esql "$esql_query" --arg wf_id "$hijack_wf_id_for_rule" --arg dash_id "$DASHBOARD_AIRCRAFT_DETAIL_ID" '{
-      name: "Squawk 7500 \u2014 Hijack Detection",
-      rule_type_id: ".es-query",
-      consumer: "observability",
-      enabled: true,
-      schedule: {interval: "5m"},
-      tags: ["adsb","squawk-7500","hijack"],
-      params: {
-        searchType: "esqlQuery",
-        esqlQuery: {esql: $esql},
-        timeField: "@timestamp",
-        threshold: [0],
-        thresholdComparator: ">",
-        timeWindowSize: 5,
-        timeWindowUnit: "m",
-        size: 100,
-        groupBy: "row"
-      },
-      artifacts: {
-        dashboards: [
-          {id: $dash_id}
-        ]
-      },
-      actions: (if $wf_id != "" then [
-        {
-          id: "system-connector-.workflows",
-          params: {
-            subActionParams: {
-              workflowId: $wf_id,
-              summaryMode: false
-            },
-            subAction: "run"
-          }
-        }
-      ] else [] end)
-    }')
-
-    local rule_tmp rule_http
-    rule_tmp=$(mktemp)
+  local hijack_rule_id="7500a1e7-cafe-4bee-b500-deadbeef7500"
+  local esql_query rule_payload rule_tmp rule_http
+  esql_query='FROM demos-aircraft-adsb | WHERE @timestamp >= NOW() - 5 minutes AND squawk == "7500" | SORT @timestamp DESC | DEDUP icao24 | KEEP @timestamp, icao24, callsign, squawk, origin_country, latitude, longitude, baro_altitude, velocity, true_track, vertical_rate, on_ground, geo_altitude | LIMIT 100'
+  rule_payload=$(jq -n --arg esql "$esql_query" --arg wf_id "$hijack_workflow_id" --arg dash_id "$dashboard_detail_id" '{
+    name: "Squawk 7500 — Hijack Detection",
+    rule_type_id: ".es-query",
+    consumer: "observability",
+    enabled: true,
+    schedule: {interval: "5m"},
+    tags: ["adsb", "squawk-7500", "hijack"],
+    params: {
+      searchType: "esqlQuery", esqlQuery: {esql: $esql}, timeField: "@timestamp",
+      threshold: [0], thresholdComparator: ">", timeWindowSize: 5,
+      timeWindowUnit: "m", size: 100, groupBy: "row"
+    },
+    artifacts: {dashboards: [{id: $dash_id}]},
+    actions: [{
+      id: "system-connector-.workflows",
+      params: {subActionParams: {workflowId: $wf_id, summaryMode: false}, subAction: "run"}
+    }]
+  }')
+  rule_tmp=$(mktemp)
+  rule_http=$(curl -s -w '%{http_code}' -o "$rule_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
+    "$KB_BASE/api/alerting/rule/$hijack_rule_id")
+  if [[ "$rule_http" == "200" ]]; then
     rule_http=$(curl -s -w '%{http_code}' -o "$rule_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -H "kbn-xsrf: true" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
       -H "Content-Type: application/json" \
-      -X POST "$KB_BASE/api/alerting/rule/$rule_id" \
-      -d "$rule_payload")
-
-    if [[ "$rule_http" -lt 200 || "$rule_http" -ge 300 ]]; then
-      echo "  WARNING (HTTP $rule_http): Could not create alerting rule." >&2
-      cat "$rule_tmp" >&2
-      echo "  Create it manually in Kibana > Stack Management > Rules." >&2
-    else
-      echo "  OK (HTTP $rule_http)"
-    fi
-    rm -f "$rule_tmp"
-  fi
-
-  # --- Deploy daily flight briefing workflow ---
-  step_label "Deploying daily flight briefing workflow"
-
-  local workflow_yaml
-  local _wf_yaml_content _wf_name
-  local _space_prefix=""
-  [[ -n "${KB_SPACE:-}" ]] && _space_prefix="/s/${KB_SPACE}"
-  _wf_yaml_content=$(sed \
-    -e "s|__KB_ENDPOINT__|${KB_BASE}|g" \
-    -e "s|__SPACE_PREFIX__|${_space_prefix}|g" \
-    -e "s|__SLACK_CONNECTOR_ID__|${SLACK_CONNECTOR_ID:-}|g" \
-    -e "s|__DASHBOARD_WORLD_OVERVIEW_ID__|${DASHBOARD_WORLD_OVERVIEW_ID}|g" \
-    -e "s|__DASHBOARD_AIRCRAFT_DETAIL_ID__|${DASHBOARD_AIRCRAFT_DETAIL_ID}|g" \
-    "elasticsearch/workflows/daily-flight-briefing.yaml")
-  _wf_name=$(echo "$_wf_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  workflow_yaml=$(echo "$_wf_yaml_content" | jq -Rs '{yaml: .}')
-  workflow_name_json=$(jq -n --arg name "$_wf_name" '{name: $name}')
-
-  local wf_tmp
-  wf_tmp=$(mktemp)
-
-  local wf_search_http existing_wf_id=""
-  wf_search_http=$(curl -s -w '%{http_code}' -o "$wf_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$wf_search_http" -ge 200 && "$wf_search_http" -lt 300 ]]; then
-    existing_wf_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "Daily Flight Briefing") | .id' < "$wf_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local wf_http=""
-  if [[ -n "$existing_wf_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      wf_http=$(curl -s -w '%{http_code}' -o "$wf_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_wf_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$workflow_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_wf_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$workflow_name_json"
-    else
-      echo "  Already exists — skipping"
-      rm -f "$wf_tmp"
-    fi
+      -X PUT "$KB_BASE/api/alerting/rule/$hijack_rule_id" -d "$rule_payload")
   else
-    wf_http=$(curl -s -w '%{http_code}' -o "$wf_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
+    rule_http=$(curl -s -w '%{http_code}' -o "$rule_tmp" \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
       -H "Content-Type: application/json" \
-      -d "$workflow_yaml")
+      -X POST "$KB_BASE/api/alerting/rule/$hijack_rule_id" -d "$rule_payload")
   fi
-
-  if [[ -n "$wf_http" ]]; then
-    if [[ "$wf_http" -lt 200 || "$wf_http" -ge 300 ]]; then
-      echo "  FAILED (HTTP $wf_http):" >&2
-      cat "$wf_tmp" >&2
-      rm -f "$wf_tmp"
-      exit 1
-    fi
-
-    local wf_id
-    wf_id=$(jq -r '.id // empty' < "$wf_tmp" 2>/dev/null || true)
-
-    if [[ -z "$existing_wf_id" && -n "$wf_id" ]]; then
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$wf_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$workflow_name_json"
-    fi
-
-    echo "  OK (HTTP $wf_http) — workflow ID: ${wf_id:-unknown}"
-    rm -f "$wf_tmp"
-  fi
-
-  # --- Deploy squawk 7500 hijack investigation workflow ---
-  step_label "Deploying squawk 7500 hijack investigation workflow"
-
-  local hijack_yaml
-  local _hijack_yaml_content _hijack_name
-  _hijack_yaml_content=$(sed \
-    -e "s|__KB_ENDPOINT__|${KB_BASE}|g" \
-    -e "s|__GNEWS_API_KEY__|${GNEWS_API_KEY:-}|g" \
-    -e "s|__SPACE_PREFIX__|${_space_prefix}|g" \
-    -e "s|__SLACK_CONNECTOR_ID__|${SLACK_CONNECTOR_ID:-}|g" \
-    -e "s|__DASHBOARD_WORLD_OVERVIEW_ID__|${DASHBOARD_WORLD_OVERVIEW_ID}|g" \
-    -e "s|__DASHBOARD_AIRCRAFT_DETAIL_ID__|${DASHBOARD_AIRCRAFT_DETAIL_ID}|g" \
-    "elasticsearch/workflows/squawk-7500-hijack-investigation.yaml")
-  _hijack_name=$(echo "$_hijack_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  hijack_yaml=$(echo "$_hijack_yaml_content" | jq -Rs '{yaml: .}')
-  hijack_name_json=$(jq -n --arg name "$_hijack_name" '{name: $name}')
-
-  local hijack_tmp
-  hijack_tmp=$(mktemp)
-
-  local hijack_search_http existing_hijack_id=""
-  hijack_search_http=$(curl -s -w '%{http_code}' -o "$hijack_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$hijack_search_http" -ge 200 && "$hijack_search_http" -lt 300 ]]; then
-    existing_hijack_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "Squawk 7500 Hijack Investigation") | .id' < "$hijack_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local hijack_http=""
-  if [[ -n "$existing_hijack_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      hijack_http=$(curl -s -w '%{http_code}' -o "$hijack_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_hijack_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$hijack_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_hijack_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$hijack_name_json"
-    else
-      echo "  Already exists — skipping"
-      rm -f "$hijack_tmp"
-    fi
+  if [[ "$rule_http" -lt 200 || "$rule_http" -ge 300 ]]; then
+    echo "  WARNING (HTTP $rule_http): Could not deploy hijack alert rule." >&2
+    cat "$rule_tmp" >&2
   else
-    hijack_http=$(curl -s -w '%{http_code}' -o "$hijack_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$hijack_yaml")
+    echo "  OK (HTTP $rule_http)"
   fi
+  rm -f "$rule_tmp"
 
-  if [[ -n "$hijack_http" ]]; then
-    if [[ "$hijack_http" -lt 200 || "$hijack_http" -ge 300 ]]; then
-      echo "  FAILED (HTTP $hijack_http):" >&2
-      cat "$hijack_tmp" >&2
-      rm -f "$hijack_tmp"
-      exit 1
-    fi
-
-    local hijack_wf_id
-    hijack_wf_id=$(jq -r '.id // empty' < "$hijack_tmp" 2>/dev/null || true)
-
-    if [[ -z "$existing_hijack_id" && -n "$hijack_wf_id" ]]; then
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$hijack_wf_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$hijack_name_json"
-    fi
-
-    echo "  OK (HTTP $hijack_http) — workflow ID: ${hijack_wf_id:-unknown}"
-    rm -f "$hijack_tmp"
-  fi
-
-  # --- Link squawk 7500 alert rule → hijack investigation workflow ---
-  step_label "Linking alert rule to hijack investigation workflow"
-
-  local _resolved_hijack_wf_id="${hijack_wf_id:-$existing_hijack_id}"
-  if [[ -z "$_resolved_hijack_wf_id" ]]; then
-    echo "  Skipped — workflow ID not available (workflow deployment may have been skipped)"
-  elif [[ -n "$hijack_wf_id_for_rule" ]]; then
-    echo "  Already wired at rule creation time — no manual step needed"
+  step_label "Verifying hijack workflow alert action"
+  local verify_body verify_code
+  verify_body=$(curl_kb -X GET "$KB_BASE/api/alerting/rule/$hijack_rule_id" 2>/dev/null)
+  verify_code=$(http_code_of "$verify_body")
+  if [[ "$verify_code" == "200" ]] && parse_response "$verify_body" |
+    jq -e --arg wf "$hijack_workflow_id" \
+      '.actions[]? | select(.id == "system-connector-.workflows" and .params.subActionParams.workflowId == $wf)' \
+      >/dev/null; then
+    echo "  Verified — alert action targets $hijack_workflow_id"
   else
-    # Workflow was deployed after rule creation; add action via API update
-    local _link_payload
-    _link_payload=$(jq -n --arg wf_id "$_resolved_hijack_wf_id" '{
-      actions: [
-        {
-          id: "system-connector-.workflows",
-          params: {
-            subActionParams: { workflowId: $wf_id, summaryMode: false },
-            subAction: "run"
-          }
-        }
-      ]
-    }')
-    local _link_http
-    _link_http=$(curl -s -w '%{http_code}' -o /dev/null \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -H "kbn-xsrf: true" \
+    echo "  WARNING: hijack alert action could not be verified." >&2
+  fi
+
+  step_label "Creating stale ingest alerting rule"
+  local stale_rule_id="57a1e1a7-cafe-4bee-b500-deadbeef0015"
+  local stale_esql stale_payload stale_http stale_tmp
+  stale_esql='FROM demos-aircraft-adsb | STATS last_seen = MAX(@timestamp) BY ingest_quadrant | WHERE last_seen IS NULL OR last_seen < NOW() - 15 minutes | KEEP ingest_quadrant, last_seen'
+  stale_payload=$(jq -n --arg esql "$stale_esql" '{
+    name: "ADS-B — Stale Ingest",
+    rule_type_id: ".es-query", consumer: "observability", enabled: true,
+    schedule: {interval: "5m"}, tags: ["adsb", "ingest", "stale"],
+    params: {
+      searchType: "esqlQuery", esqlQuery: {esql: $esql}, timeField: "@timestamp",
+      threshold: [0], thresholdComparator: ">", timeWindowSize: 20,
+      timeWindowUnit: "m", size: 1, groupBy: "all"
+    },
+    actions: []
+  }')
+  stale_tmp=$(mktemp)
+  stale_http=$(curl -s -o "$stale_tmp" -w '%{http_code}' \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
+    "$KB_BASE/api/alerting/rule/$stale_rule_id")
+  if [[ "$stale_http" == "200" ]]; then
+    [[ "$FORCE" == "true" ]] && stale_http=$(curl -s -o "$stale_tmp" -w '%{http_code}' \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
       -H "Content-Type: application/json" \
-      -X PUT "$KB_BASE/api/alerting/rule/$rule_id" \
-      -d "$_link_payload")
-    if [[ "$_link_http" -ge 200 && "$_link_http" -lt 300 ]]; then
-      echo "  OK — workflow action added to rule via API"
-    else
-      local _rule_url="${KB_BASE}/app/management/insightsAndAlerting/triggersActions/rules/edit/${rule_id}"
-      echo "  WARNING (HTTP $_link_http): Could not add action via API." >&2
-      echo ""
-      echo "  ┌──────────────────────────────────────────────────────────────┐"
-      echo "  │  MANUAL STEP REQUIRED                                       │"
-      echo "  │                                                              │"
-      echo "  │  Connect the alert rule to the workflow in the Kibana UI:    │"
-      echo "  │                                                              │"
-      echo "  │  1. Open the rule:                                           │"
-      echo "  │     ${_rule_url}"
-      echo "  │  2. Under Actions, click 'Add action'                        │"
-      echo "  │  3. Select 'Workflows'                                       │"
-      echo "  │  4. Choose 'Squawk 7500 Hijack Investigation'                │"
-      echo "  │  5. Set frequency to 'Run per alert'                         │"
-      echo "  │  6. Save                                                     │"
-      echo "  └──────────────────────────────────────────────────────────────┘"
-      echo ""
-    fi
-  fi
-
-  # --- Deploy squawk 7500 enrich workflow ---
-  step_label "Deploying squawk 7500 enrich workflow"
-
-  local enrich_yaml
-  local _enrich_yaml_content _enrich_name
-  _enrich_yaml_content=$(sed -e "s|__GNEWS_API_KEY__|${GNEWS_API_KEY:-}|g" \
-    "elasticsearch/workflows/squawk-7500-enrich.yaml")
-  _enrich_name=$(echo "$_enrich_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  enrich_yaml=$(echo "$_enrich_yaml_content" | jq -Rs '{yaml: .}')
-  enrich_name_json=$(jq -n --arg name "$_enrich_name" '{name: $name}')
-
-  local enrich_tmp
-  enrich_tmp=$(mktemp)
-
-  local enrich_search_http existing_enrich_id=""
-  enrich_search_http=$(curl -s -w '%{http_code}' -o "$enrich_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$enrich_search_http" -ge 200 && "$enrich_search_http" -lt 300 ]]; then
-    existing_enrich_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "Squawk 7500 Enrich") | .id' < "$enrich_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local enrich_http=""
-  if [[ -n "$existing_enrich_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      enrich_http=$(curl -s -w '%{http_code}' -o "$enrich_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_enrich_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$enrich_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_enrich_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$enrich_name_json"
-    else
-      echo "  Already exists — skipping"
-    fi
+      -X PUT "$KB_BASE/api/alerting/rule/$stale_rule_id" -d "$stale_payload")
   else
-    enrich_http=$(curl -s -w '%{http_code}' -o "$enrich_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
+    stale_http=$(curl -s -o "$stale_tmp" -w '%{http_code}' \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
       -H "Content-Type: application/json" \
-      -d "$enrich_yaml")
+      -X POST "$KB_BASE/api/alerting/rule/$stale_rule_id" -d "$stale_payload")
   fi
-
-  local enrich_wf_id="${existing_enrich_id:-}"
-  if [[ -n "$enrich_http" ]]; then
-    if [[ "$enrich_http" -lt 200 || "$enrich_http" -ge 300 ]]; then
-      echo "  FAILED (HTTP $enrich_http):" >&2
-      cat "$enrich_tmp" >&2
-      rm -f "$enrich_tmp"
-      exit 1
-    fi
-    enrich_wf_id=$(jq -r '.id // empty' < "$enrich_tmp" 2>/dev/null || true)
-
-    if [[ -z "$existing_enrich_id" && -n "$enrich_wf_id" ]]; then
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$enrich_wf_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$enrich_name_json"
-    fi
-
-    echo "  OK (HTTP $enrich_http) — workflow ID: ${enrich_wf_id:-unknown}"
-  fi
-  rm -f "$enrich_tmp"
-
-  register_wf_tool_from_file "squawk-7500-enrich" "${enrich_wf_id:-}"
-
-  # --- Deploy squawk 7500 create-case workflow ---
-  step_label "Deploying squawk 7500 create-case workflow"
-
-  local case_yaml
-  local _case_yaml_content _case_name
-  _case_yaml_content=$(sed -e "s|__SPACE_PREFIX__|${_space_prefix}|g" \
-    "elasticsearch/workflows/squawk-7500-create-case.yaml")
-  _case_name=$(echo "$_case_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  case_yaml=$(echo "$_case_yaml_content" | jq -Rs '{yaml: .}')
-  case_name_json=$(jq -n --arg name "$_case_name" '{name: $name}')
-
-  local case_tmp
-  case_tmp=$(mktemp)
-
-  local case_search_http existing_case_id=""
-  case_search_http=$(curl -s -w '%{http_code}' -o "$case_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$case_search_http" -ge 200 && "$case_search_http" -lt 300 ]]; then
-    existing_case_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "Squawk 7500 Create Case") | .id' < "$case_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local case_http=""
-  if [[ -n "$existing_case_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      case_http=$(curl -s -w '%{http_code}' -o "$case_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_case_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$case_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_case_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$case_name_json"
-    else
-      echo "  Already exists — skipping"
-    fi
+  if [[ "$stale_http" -ge 200 && "$stale_http" -lt 300 ]]; then
+    echo "  OK (HTTP $stale_http)"
   else
-    case_http=$(curl -s -w '%{http_code}' -o "$case_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
+    echo "  WARNING (HTTP $stale_http): Could not deploy stale-ingest rule." >&2
+    cat "$stale_tmp" >&2
+  fi
+  rm -f "$stale_tmp"
+
+  step_label "Creating enrichment-error alerting rule"
+  local error_rule_id="57a1e1a7-cafe-4bee-b500-deadbeef0016"
+  local error_esql error_payload error_http error_tmp
+  error_esql='FROM demos-aircraft-adsb | WHERE @timestamp >= NOW() - 15 minutes | WHERE error.enrich.country IS NOT NULL OR error.enrich.airport IS NOT NULL | STATS failure_count = COUNT(*), latest_failure = MAX(@timestamp) | KEEP failure_count, latest_failure'
+  error_payload=$(jq -n --arg esql "$error_esql" '{
+    name: "ADS-B — Enrichment Errors",
+    rule_type_id: ".es-query", consumer: "observability", enabled: true,
+    schedule: {interval: "5m"}, tags: ["adsb", "ingest", "enrichment-error"],
+    params: {
+      searchType: "esqlQuery", esqlQuery: {esql: $esql}, timeField: "@timestamp",
+      threshold: [0], thresholdComparator: ">", timeWindowSize: 15,
+      timeWindowUnit: "m", size: 1, groupBy: "all"
+    },
+    actions: []
+  }')
+  error_tmp=$(mktemp)
+  error_http=$(curl -s -o "$error_tmp" -w '%{http_code}' \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
+    "$KB_BASE/api/alerting/rule/$error_rule_id")
+  if [[ "$error_http" == "200" ]]; then
+    [[ "$FORCE" == "true" ]] && error_http=$(curl -s -o "$error_tmp" -w '%{http_code}' \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
       -H "Content-Type: application/json" \
-      -d "$case_yaml")
-  fi
-
-  local case_wf_id="${existing_case_id:-}"
-  if [[ -n "$case_http" ]]; then
-    if [[ "$case_http" -lt 200 || "$case_http" -ge 300 ]]; then
-      echo "  FAILED (HTTP $case_http):" >&2
-      cat "$case_tmp" >&2
-      rm -f "$case_tmp"
-      exit 1
-    fi
-    case_wf_id=$(jq -r '.id // empty' < "$case_tmp" 2>/dev/null || true)
-
-    if [[ -z "$existing_case_id" && -n "$case_wf_id" ]]; then
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$case_wf_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$case_name_json"
-    fi
-
-    echo "  OK (HTTP $case_http) — workflow ID: ${case_wf_id:-unknown}"
-  fi
-  rm -f "$case_tmp"
-
-  register_wf_tool_from_file "squawk-7500-create-case" "${case_wf_id:-}"
-
-  # --- Deploy ADS-B aggregate stats workflow ---
-  step_label "Deploying ADS-B aggregate stats workflow"
-
-  local agg_yaml
-  local _agg_yaml_content _agg_name
-  _agg_yaml_content=$(cat "elasticsearch/workflows/adsb-aggregate-stats.yaml")
-  _agg_name=$(echo "$_agg_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  agg_yaml=$(echo "$_agg_yaml_content" | jq -Rs '{yaml: .}')
-  agg_name_json=$(jq -n --arg name "$_agg_name" '{name: $name}')
-
-  local agg_tmp
-  agg_tmp=$(mktemp)
-
-  local agg_search_http existing_agg_id=""
-  agg_search_http=$(curl -s -w '%{http_code}' -o "$agg_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$agg_search_http" -ge 200 && "$agg_search_http" -lt 300 ]]; then
-    existing_agg_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "ADS-B Aggregate Stats") | .id' < "$agg_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local agg_http
-  if [[ -n "$existing_agg_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      agg_http=$(curl -s -w '%{http_code}' -o "$agg_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_agg_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$agg_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_agg_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$agg_name_json"
-    else
-      echo "  Already exists — skipping"
-      local agg_wf_id="$existing_agg_id"
-      register_wf_tool_from_file "adsb-aggregate-stats" "$agg_wf_id"
-      rm -f "$agg_tmp"
-      return 0
-    fi
+      -X PUT "$KB_BASE/api/alerting/rule/$error_rule_id" -d "$error_payload")
   else
-    agg_http=$(curl -s -w '%{http_code}' -o "$agg_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
+    error_http=$(curl -s -o "$error_tmp" -w '%{http_code}' \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
       -H "Content-Type: application/json" \
-      -d "$agg_yaml")
+      -X POST "$KB_BASE/api/alerting/rule/$error_rule_id" -d "$error_payload")
   fi
-
-  if [[ "$agg_http" -lt 200 || "$agg_http" -ge 300 ]]; then
-    echo "  FAILED (HTTP $agg_http):" >&2
-    cat "$agg_tmp" >&2
-    rm -f "$agg_tmp"
-    exit 1
-  fi
-
-  local agg_wf_id
-  agg_wf_id=$(jq -r '.id // empty' < "$agg_tmp" 2>/dev/null || true)
-
-  if [[ -z "$existing_agg_id" && -n "$agg_wf_id" ]]; then
-    warn_on_fail "Setting workflow name" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X PUT "$KB_BASE/api/workflows/workflow/$agg_wf_id" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$agg_name_json"
-  fi
-
-  echo "  OK (HTTP $agg_http) — workflow ID: ${agg_wf_id:-unknown}"
-
-  register_wf_tool_from_file "adsb-aggregate-stats" "$agg_wf_id"
-  rm -f "$agg_tmp"
-
-  # --- Deploy aircraft history report workflow ---
-  step_label "Deploying aircraft history report workflow"
-
-  local hist_yaml
-  local _hist_yaml_content _hist_name
-  _hist_yaml_content=$(sed -e "s|__SPACE_PREFIX__|${_space_prefix}|g" \
-    "elasticsearch/workflows/adsb-aircraft-history.yaml")
-  _hist_name=$(echo "$_hist_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  hist_yaml=$(echo "$_hist_yaml_content" | jq -Rs '{yaml: .}')
-  hist_name_json=$(jq -n --arg name "$_hist_name" '{name: $name}')
-
-  local hist_tmp
-  hist_tmp=$(mktemp)
-
-  local hist_search_http existing_hist_id=""
-  hist_search_http=$(curl -s -w '%{http_code}' -o "$hist_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$hist_search_http" -ge 200 && "$hist_search_http" -lt 300 ]]; then
-    existing_hist_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "ADS-B Aircraft History Report") | .id' < "$hist_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local hist_http
-  if [[ -n "$existing_hist_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      hist_http=$(curl -s -w '%{http_code}' -o "$hist_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_hist_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$hist_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_hist_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$hist_name_json"
-    else
-      echo "  Already exists — skipping"
-      local hist_wf_id="$existing_hist_id"
-      register_wf_tool_from_file "adsb-aircraft-history" "$hist_wf_id"
-      rm -f "$hist_tmp"
-      return 0
-    fi
+  if [[ "$error_http" -ge 200 && "$error_http" -lt 300 ]]; then
+    echo "  OK (HTTP $error_http)"
   else
-    hist_http=$(curl -s -w '%{http_code}' -o "$hist_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$hist_yaml")
+    echo "  WARNING (HTTP $error_http): Could not deploy enrichment-error rule." >&2
+    cat "$error_tmp" >&2
   fi
+  rm -f "$error_tmp"
 
-  if [[ "$hist_http" -lt 200 || "$hist_http" -ge 300 ]]; then
-    echo "  FAILED (HTTP $hist_http):" >&2
-    cat "$hist_tmp" >&2
-    rm -f "$hist_tmp"
-    exit 1
+  step_label "Installing Agent Builder traces dashboard"
+  local traces_tmp traces_http tracing_setting_http
+  traces_tmp=$(mktemp)
+  tracing_setting_http=$(curl -s -o "$traces_tmp" -w '%{http_code}' \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
+    -H "Content-Type: application/json" \
+    -X POST "$KB_BASE/api/kibana/settings" \
+    -d '{"changes":{"agentBuilder:tracing:enabled":true}}')
+  if [[ "$tracing_setting_http" -lt 200 || "$tracing_setting_http" -ge 300 ]]; then
+    echo "  Trace collection setting unchanged (HTTP $tracing_setting_http); 9.5 defaults it to enabled"
   fi
-
-  local hist_wf_id
-  hist_wf_id=$(jq -r '.id // empty' < "$hist_tmp" 2>/dev/null || true)
-
-  if [[ -z "$existing_hist_id" && -n "$hist_wf_id" ]]; then
-    warn_on_fail "Setting workflow name" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X PUT "$KB_BASE/api/workflows/workflow/$hist_wf_id" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$hist_name_json"
-  fi
-
-  echo "  OK (HTTP $hist_http) — workflow ID: ${hist_wf_id:-unknown}"
-
-  register_wf_tool_from_file "adsb-aircraft-history" "$hist_wf_id"
-  rm -f "$hist_tmp"
-
-  # --- Deploy airport activity report workflow ---
-  step_label "Deploying airport activity report workflow"
-
-  local arpt_yaml
-  local _arpt_yaml_content _arpt_name
-  _arpt_yaml_content=$(sed -e "s|__SPACE_PREFIX__|${_space_prefix}|g" \
-    "elasticsearch/workflows/adsb-airport-activity.yaml")
-  _arpt_name=$(echo "$_arpt_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  arpt_yaml=$(echo "$_arpt_yaml_content" | jq -Rs '{yaml: .}')
-  arpt_name_json=$(jq -n --arg name "$_arpt_name" '{name: $name}')
-
-  local arpt_tmp
-  arpt_tmp=$(mktemp)
-
-  local arpt_search_http existing_arpt_id=""
-  arpt_search_http=$(curl -s -w '%{http_code}' -o "$arpt_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$arpt_search_http" -ge 200 && "$arpt_search_http" -lt 300 ]]; then
-    existing_arpt_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "ADS-B Airport Activity Report") | .id' < "$arpt_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local arpt_http
-  if [[ -n "$existing_arpt_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      arpt_http=$(curl -s -w '%{http_code}' -o "$arpt_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_arpt_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$arpt_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_arpt_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$arpt_name_json"
-    else
-      echo "  Already exists — skipping"
-      local arpt_wf_id="$existing_arpt_id"
-      register_wf_tool_from_file "adsb-airport-activity" "$arpt_wf_id"
-      rm -f "$arpt_tmp"
-    fi
+  traces_http=$(curl -s -o "$traces_tmp" -w '%{http_code}' \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" -H "kbn-xsrf: true" \
+    -H "Content-Type: application/json" \
+    -X POST "$KB_BASE/internal/gen_ai_settings/agent_builder/tracing_dashboard" \
+    -d '{"enabled":true}')
+  if [[ "$traces_http" -ge 200 && "$traces_http" -lt 300 ]]; then
+    echo "  Installed (HTTP $traces_http); trace collection is enabled by default in 9.5"
+  elif [[ "$traces_http" == "404" ]]; then
+    echo "  Skipped — traces dashboard requires Kibana 9.5+"
   else
-    arpt_http=$(curl -s -w '%{http_code}' -o "$arpt_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$arpt_yaml")
+    echo "  WARNING (HTTP $traces_http): Could not install traces dashboard." >&2
+    cat "$traces_tmp" >&2
   fi
-
-  if [[ -n "$existing_arpt_id" && "$FORCE" != "true" ]]; then
-    : # already handled above (skip branch)
-  else
-    if [[ "$arpt_http" -lt 200 || "$arpt_http" -ge 300 ]]; then
-      echo "  FAILED (HTTP $arpt_http):" >&2
-      cat "$arpt_tmp" >&2
-      rm -f "$arpt_tmp"
-      exit 1
-    fi
-
-    local arpt_wf_id
-    arpt_wf_id=$(jq -r '.id // empty' < "$arpt_tmp" 2>/dev/null || true)
-
-    if [[ -z "$existing_arpt_id" && -n "$arpt_wf_id" ]]; then
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$arpt_wf_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$arpt_name_json"
-    fi
-
-    echo "  OK (HTTP $arpt_http) — workflow ID: ${arpt_wf_id:-unknown}"
-
-    register_wf_tool_from_file "adsb-airport-activity" "$arpt_wf_id"
-  fi
-  rm -f "$arpt_tmp"
-
-  # --- Deploy hijack cases summary workflow ---
-  step_label "Deploying hijack cases summary workflow"
-
-  local hcs_yaml
-  local _hcs_yaml_content _hcs_name
-  _hcs_yaml_content=$(sed -e "s|__SPACE_PREFIX__|${_space_prefix}|g" \
-    "elasticsearch/workflows/hijack-cases-summary.yaml")
-  _hcs_name=$(echo "$_hcs_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  hcs_yaml=$(echo "$_hcs_yaml_content" | jq -Rs '{yaml: .}')
-  hcs_name_json=$(jq -n --arg name "$_hcs_name" '{name: $name}')
-
-  local hcs_tmp
-  hcs_tmp=$(mktemp)
-
-  local hcs_search_http existing_hcs_id=""
-  hcs_search_http=$(curl -s -w '%{http_code}' -o "$hcs_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$hcs_search_http" -ge 200 && "$hcs_search_http" -lt 300 ]]; then
-    existing_hcs_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "Hijack Cases Summary") | .id' < "$hcs_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local hcs_http
-  if [[ -n "$existing_hcs_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      hcs_http=$(curl -s -w '%{http_code}' -o "$hcs_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_hcs_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$hcs_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_hcs_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$hcs_name_json"
-    else
-      echo "  Already exists — skipping"
-      local hcs_wf_id="$existing_hcs_id"
-      register_wf_tool_from_file "hijack-cases-summary" "$hcs_wf_id"
-      rm -f "$hcs_tmp"
-      return 0
-    fi
-  else
-    hcs_http=$(curl -s -w '%{http_code}' -o "$hcs_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$hcs_yaml")
-  fi
-
-  if [[ "$hcs_http" -lt 200 || "$hcs_http" -ge 300 ]]; then
-    echo "  FAILED (HTTP $hcs_http):" >&2
-    cat "$hcs_tmp" >&2
-    rm -f "$hcs_tmp"
-    exit 1
-  fi
-
-  local hcs_wf_id
-  hcs_wf_id=$(jq -r '.id // empty' < "$hcs_tmp" 2>/dev/null || true)
-
-  if [[ -z "$existing_hcs_id" && -n "$hcs_wf_id" ]]; then
-    warn_on_fail "Setting workflow name" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X PUT "$KB_BASE/api/workflows/workflow/$hcs_wf_id" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$hcs_name_json"
-  fi
-
-  echo "  OK (HTTP $hcs_http) — workflow ID: ${hcs_wf_id:-unknown}"
-
-  register_wf_tool_from_file "hijack-cases-summary" "$hcs_wf_id"
-  rm -f "$hcs_tmp"
-
-  # --- Deploy defunct callsign detector workflow ---
-  step_label "Deploying defunct callsign detector workflow"
-
-  local dcd_yaml
-  local _dcd_yaml_content _dcd_name
-  _dcd_yaml_content=$(cat "elasticsearch/workflows/adsb-defunct-callsign-detector.yaml")
-  _dcd_name=$(echo "$_dcd_yaml_content" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//')
-  dcd_yaml=$(echo "$_dcd_yaml_content" | jq -Rs '{yaml: .}')
-  dcd_name_json=$(jq -n --arg name "$_dcd_name" '{name: $name}')
-
-  local dcd_tmp
-  dcd_tmp=$(mktemp)
-
-  local dcd_search_http existing_dcd_id=""
-  dcd_search_http=$(curl -s -w '%{http_code}' -o "$dcd_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-    -H "kbn-xsrf: true" \
-    -H "x-elastic-internal-origin: kibana" \
-    "$KB_BASE/api/workflows")
-
-  if [[ "$dcd_search_http" -ge 200 && "$dcd_search_http" -lt 300 ]]; then
-    existing_dcd_id=$(jq -r '(.workflows // .results // [])[] | select(.name == "Defunct Callsign Detector") | .id' < "$dcd_tmp" 2>/dev/null | head -1 || true)
-  fi
-
-  local dcd_http
-  if [[ -n "$existing_dcd_id" ]]; then
-    if [[ "$FORCE" == "true" ]]; then
-      echo "  Workflow exists — updating (--force)"
-      dcd_http=$(curl -s -w '%{http_code}' -o "$dcd_tmp" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_dcd_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$dcd_yaml")
-      warn_on_fail "Setting workflow name" \
-        -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-        -X PUT "$KB_BASE/api/workflows/workflow/$existing_dcd_id" \
-        -H "kbn-xsrf: true" \
-        -H "x-elastic-internal-origin: kibana" \
-        -H "Content-Type: application/json" \
-        -d "$dcd_name_json"
-    else
-      echo "  Already exists — skipping"
-      local dcd_wf_id="$existing_dcd_id"
-      register_wf_tool_from_file "adsb-defunct-callsign-detector" "$dcd_wf_id"
-      rm -f "$dcd_tmp"
-      return 0
-    fi
-  else
-    dcd_http=$(curl -s -w '%{http_code}' -o "$dcd_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X POST "$KB_BASE/api/workflows/workflow" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$dcd_yaml")
-  fi
-
-  if [[ "$dcd_http" -lt 200 || "$dcd_http" -ge 300 ]]; then
-    echo "  FAILED (HTTP $dcd_http):" >&2
-    cat "$dcd_tmp" >&2
-    rm -f "$dcd_tmp"
-    exit 1
-  fi
-
-  local dcd_wf_id
-  dcd_wf_id=$(jq -r '.id // empty' < "$dcd_tmp" 2>/dev/null || true)
-
-  if [[ -z "$existing_dcd_id" && -n "$dcd_wf_id" ]]; then
-    warn_on_fail "Setting workflow name" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -X PUT "$KB_BASE/api/workflows/workflow/$dcd_wf_id" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      -H "Content-Type: application/json" \
-      -d "$dcd_name_json"
-  fi
-
-  echo "  OK (HTTP $dcd_http) — workflow ID: ${dcd_wf_id:-unknown}"
-
-  register_wf_tool_from_file "adsb-defunct-callsign-detector" "${dcd_wf_id:-}"
-  rm -f "$dcd_tmp"
+  rm -f "$traces_tmp"
 }
 
 register_wf_tool() {
@@ -1925,8 +1580,7 @@ register_wf_tool() {
 # ---------------------------------------------------------------------------
 # register_wf_tool_from_file <tool_id> <workflow_id>
 # Loads description and tags from elasticsearch/tools/<tool_id>.json and
-# calls register_wf_tool. The workflow_id placeholder in the JSON file is
-# replaced at runtime with the live workflow-* UUID.
+# calls register_wf_tool with the source-controlled workflow ID.
 # ---------------------------------------------------------------------------
 register_wf_tool_from_file() {
   local tool_id="$1" wf_id="$2"
@@ -1958,52 +1612,27 @@ setup_tools() {
     tool_id=$(jq -r '.id' "$tool_json")
     step_label "  Deploying tool: $tool_id"
 
-    # Build payload: inject live workflow_id by looking up the corresponding
-    # workflow by name. The placeholder __*_WF_ID__ in the JSON must be
-    # replaced with a real UUID obtained from the running Kibana instance.
-    # We query the workflows list and match by the workflow name derived from
-    # the tool's configuration.workflow_id placeholder suffix pattern.
-    # For tools/ deploy, we trust that workflows have already been deployed
-    # (deploy order: workflows -> tools). Look up each tool's workflow_id via
-    # the tool JSON's placeholder to determine the workflow name mapping.
-    local placeholder wf_name wf_lookup_tmp wf_lookup_http real_wf_id=""
+    # Resolve source-controlled workflow IDs from the placeholders committed
+    # in each tool definition. Workflows deploy before tools.
+    local placeholder stable_wf_id=""
     placeholder=$(jq -r '.configuration.workflow_id' "$tool_json")
 
     case "$placeholder" in
-      __ADSB_AGGREGATE_STATS_WF_ID__)   wf_name="ADS-B Aggregate Stats" ;;
-      __ADSB_AIRCRAFT_HISTORY_WF_ID__)  wf_name="ADS-B Aircraft History Report" ;;
-      __ADSB_AIRPORT_ACTIVITY_WF_ID__)  wf_name="ADS-B Airport Activity Report" ;;
-      __ADSB_DEFUNCT_CALLSIGN_DETECTOR_WF_ID__) wf_name="Defunct Callsign Detector" ;;
-      __HIJACK_CASES_SUMMARY_WF_ID__)   wf_name="Hijack Cases Summary" ;;
-      __SQUAWK_7500_ENRICH_WF_ID__)     wf_name="Squawk 7500 Enrich" ;;
-      __SQUAWK_7500_CREATE_CASE_WF_ID__) wf_name="Squawk 7500 Create Case" ;;
-      *)                                wf_name="" ;;
+      __ADSB_AGGREGATE_STATS_WF_ID__)   stable_wf_id="adsb-aggregate-stats" ;;
+      __ADSB_AIRCRAFT_HISTORY_WF_ID__)  stable_wf_id="adsb-aircraft-history" ;;
+      __ADSB_AIRPORT_ACTIVITY_WF_ID__)  stable_wf_id="adsb-airport-activity" ;;
+      __ADSB_DEFUNCT_CALLSIGN_DETECTOR_WF_ID__) stable_wf_id="adsb-defunct-callsign-detector" ;;
+      __HIJACK_CASES_SUMMARY_WF_ID__)   stable_wf_id="adsb-hijack-cases-summary" ;;
+      __SQUAWK_7500_ENRICH_WF_ID__)     stable_wf_id="adsb-squawk-7500-enrich" ;;
+      __SQUAWK_7500_CREATE_CASE_WF_ID__) stable_wf_id="adsb-squawk-7500-create-case" ;;
     esac
 
-    if [[ -z "$wf_name" ]]; then
+    if [[ -z "$stable_wf_id" ]]; then
       echo "  WARNING: Unknown workflow placeholder '$placeholder' for tool $tool_id — skipping" >&2
       continue
     fi
 
-    wf_lookup_tmp=$(mktemp)
-    wf_lookup_http=$(curl -s -w '%{http_code}' -o "$wf_lookup_tmp" \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
-      -H "kbn-xsrf: true" \
-      -H "x-elastic-internal-origin: kibana" \
-      "$KB_BASE/api/workflows")
-    if [[ "$wf_lookup_http" -ge 200 && "$wf_lookup_http" -lt 300 ]]; then
-      real_wf_id=$(jq -r --arg n "$wf_name" \
-        '(.workflows // .results // [])[] | select(.name == $n) | .id' \
-        < "$wf_lookup_tmp" 2>/dev/null | head -1 || true)
-    fi
-    rm -f "$wf_lookup_tmp"
-
-    if [[ -z "$real_wf_id" ]]; then
-      echo "  WARNING: Workflow '$wf_name' not found — cannot register tool $tool_id" >&2
-      continue
-    fi
-
-    register_wf_tool_from_file "$tool_id" "$real_wf_id"
+    register_wf_tool_from_file "$tool_id" "$stable_wf_id"
   done
 }
 
@@ -2068,7 +1697,7 @@ create_kibana_role() {
   if [[ "$FORCE" != "true" ]]; then
     local check_http
     check_http=$(curl -s -o /dev/null -w '%{http_code}' \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "Authorization: ApiKey $SETUP_API_KEY_ENCODED" \
       "$KB_BASE/api/security/role/$role_name")
     if [[ "$check_http" == "200" ]]; then
       echo "  Role '$role_name' already exists — skipping"
@@ -2079,7 +1708,7 @@ create_kibana_role() {
   local role_tmp role_http
   role_tmp=$(mktemp)
   role_http=$(curl -s -w '%{http_code}' -o "$role_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    -H "Authorization: ApiKey $SETUP_API_KEY_ENCODED" \
     -H "kbn-xsrf: true" \
     -H "Content-Type: application/json" \
     -X PUT "$KB_BASE/api/security/role/$role_name" \
@@ -2117,7 +1746,7 @@ create_demo_user() {
   if [[ "$FORCE" != "true" ]]; then
     local check_body
     check_body=$(curl -s \
-      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      -H "Authorization: ApiKey $SETUP_API_KEY_ENCODED" \
       "$BASE/_security/user/$username")
     if echo "$check_body" | jq -e ".[\"$username\"]" &>/dev/null; then
       echo "  User '$username' already exists — skipping (password unchanged)"
@@ -2128,7 +1757,7 @@ create_demo_user() {
   local user_tmp user_http
   user_tmp=$(mktemp)
   user_http=$(curl -s -w '%{http_code}' -o "$user_tmp" \
-    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    -H "Authorization: ApiKey $SETUP_API_KEY_ENCODED" \
     -X PUT "$BASE/_security/user/$username" \
     -H "Content-Type: application/json" \
     -d "$(jq -n \
@@ -2172,12 +1801,17 @@ setup_demouser() {
       cluster: [],
       indices: [
         {
-          names: ["demos-aircraft-adsb*", "adsb*", "geo.shapes-world.countries-50m"],
+          names: [
+            "demos-aircraft-adsb*",
+            "adsb*",
+            "geo.shapes-world.countries-50m",
+            "traces-agent_builder.otel-*"
+          ],
           privileges: ["read", "view_index_metadata"]
         },
         {
-          names: [".internal.alerts-*"],
-          privileges: ["read", "write", "view_index_metadata"],
+          names: [".cases", ".cases-activity", ".cases-attachments"],
+          privileges: ["read", "view_index_metadata"],
           allow_restricted_indices: true
         }
       ]
@@ -2190,9 +1824,9 @@ setup_demouser() {
           discover_v2: ["read"],
           maps_v2: ["read"],
           visualize_v2: ["read"],
-          observabilityCasesV3: ["all"],
-          agentBuilder: ["all"],
-          stackAlerts: ["all"],
+          observabilityCasesV3: ["read"],
+          agentBuilder: ["read"],
+          workflowsManagement: ["read", "workflow_execute"],
           actions: ["read"]
         },
         spaces: $spaces
@@ -2220,7 +1854,12 @@ setup_demouser() {
         },
         {
           names: [".internal.alerts-*"],
-          privileges: ["read", "write", "view_index_metadata"],
+          privileges: ["read", "view_index_metadata"],
+          allow_restricted_indices: true
+        },
+        {
+          names: [".cases", ".cases-activity", ".cases-attachments"],
+          privileges: ["read", "view_index_metadata"],
           allow_restricted_indices: true
         }
       ]
@@ -2290,6 +1929,7 @@ echo "Groups: $SELECTED_GROUPS"
 echo ""
 
 [[ "$SKIP_SERVICE_USER" == "false" ]] && setup_serviceuser
+group_enabled "ingestkey" && setup_ingestkey
 group_enabled "space"     && setup_space
 group_enabled "ilm"       && setup_ilm
 group_enabled "indices"   && setup_indices

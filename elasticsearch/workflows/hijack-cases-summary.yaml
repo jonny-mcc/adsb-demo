@@ -1,3 +1,4 @@
+version: "1"
 name: Hijack Cases Summary
 description: >-
   Fetches squawk 7500 (hijack) investigation cases from the last 24 hours.
@@ -6,16 +7,22 @@ description: >-
 enabled: true
 tags: ["adsb", "squawk-7500", "cases", "briefing"]
 
-outputs:
-  cases:
-    value: "${{ steps.fetch_cases.output }}"
-
 triggers:
   - type: manual
 
 steps:
   - name: fetch_cases
-    type: kibana.request
+    type: cases.findCases
     with:
-      method: GET
-      path: "__SPACE_PREFIX__/api/cases/_find?tags=squawk-7500&owner=observability&perPage=100&sortField=createdAt&sortOrder=desc"
+      tags:
+        - squawk-7500
+      owner: observability
+      page: 1
+      perPage: 100
+      sortField: createdAt
+      sortOrder: desc
+
+  - name: return_outputs
+    type: data.set
+    with:
+      cases: "${{ steps.fetch_cases.output }}"

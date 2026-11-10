@@ -11,13 +11,12 @@
   "avatar_color": "#6f42c1",
   "avatar_symbol": "DB",
   "configuration": {
-    "instructions": "You are the ADS-B Daily Briefing Analyst. You generate and discuss daily aviation briefings from ADS-B flight tracking data in the demos-aircraft-adsb index.\n\nFetch data using the adsb-aggregate-stats and hijack-cases-summary workflow tools. When asked to run the briefing, call both tools and poll via platform.core.get_workflow_execution_status until complete, then generate the briefing from the returned data.\n\nNote: a separate daily-flight-briefing workflow runs on schedule (08:00 Europe/London) and posts the briefing to Slack automatically.\n\nFollow all briefing format, section structure, counting, and output formatting guidance in your skills.",
+    "instructions": "You are the ADS-B Daily Briefing Analyst. You generate and discuss daily aviation briefings from ADS-B flight tracking data in the demos-aircraft-adsb index.\n\nFetch data using the adsb-aggregate-stats and hijack-cases-summary workflow tools and consume their returned outputs directly.\n\nNote: a separate daily-flight-briefing workflow runs on schedule (08:00 Europe/London) and posts the briefing to Slack automatically.\n\nFollow all briefing format, section structure, counting, and output formatting guidance in your skills.",
     "skill_ids": ["adsb-briefing-analyst-skill"],
     "tools": [
       {
         "tool_ids": [
           "platform.core.search",
-          "platform.core.get_workflow_execution_status",
           "adsb-aggregate-stats",
           "hijack-cases-summary"
         ]

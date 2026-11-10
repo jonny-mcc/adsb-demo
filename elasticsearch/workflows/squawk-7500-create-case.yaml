@@ -1,93 +1,98 @@
+version: "1"
 name: Squawk 7500 Create Case
 description: >-
   Creates or updates a Kibana case for a squawk 7500 investigation.
-  Deduplicates by searching for an existing open case using a composite
-  icao24:callsign tag. If one exists, adds a comment; otherwise creates
+  Deduplicates by searching for an existing open case using the aircraft's
+  icao24 tag. If one exists, adds a comment; otherwise creates
   a new case with the assessment details. Designed as a workflow tool
   for the hijack assessment agent.
 enabled: true
 tags: ["adsb", "squawk-7500", "cases"]
 
-outputs:
-  existing_case_search:
-    value: "${{ steps.find_existing_case.output }}"
-  created_case:
-    value: "${{ steps.create_case.output }}"
-
-inputs:
-  - name: icao24
-    type: string
-    required: true
-    description: "ICAO 24-bit aircraft address (hex)"
-  - name: callsign
-    type: string
-    required: false
-    default: ""
-    description: "Flight callsign"
-  - name: triage_assessment
-    type: string
-    required: true
-    description: "AI triage assessment: genuine or false_positive"
-  - name: confidence
-    type: string
-    required: true
-    description: "Confidence level: low, medium, or high"
-  - name: reasoning
-    type: string
-    required: true
-    description: "Full assessment reasoning text"
-
 triggers:
   - type: manual
+    inputs:
+      properties:
+        icao24:
+          type: string
+          pattern: "^[0-9A-Fa-f]{6}$"
+          description: "ICAO 24-bit aircraft address (hex)"
+        callsign:
+          type: string
+          pattern: "^[A-Za-z0-9 ]{0,12}$"
+          default: ""
+          description: "Flight callsign"
+        triage_assessment:
+          type: string
+          enum: [genuine, false_positive]
+          description: "AI triage assessment: genuine or false_positive"
+        confidence:
+          type: string
+          enum: [low, medium, high]
+          description: "Confidence level: low, medium, or high"
+        reasoning:
+          type: string
+          description: "Full assessment reasoning text"
+      required:
+        - icao24
+        - triage_assessment
+        - confidence
+        - reasoning
 
 steps:
   # ------------------------------------------------------------------
   # 1. Deduplicate — search for an existing open case
   # ------------------------------------------------------------------
   - name: find_existing_case
-    type: kibana.request
+    type: cases.findCases
     with:
-      method: GET
-      path: "__SPACE_PREFIX__/api/cases/_find?tags=icao24:{{ inputs.icao24 }}:callsign:{{ inputs.callsign }}&status=open&perPage=1"
+      tags:
+        - "icao24:{{ inputs.icao24 }}"
+      status: open
+      page: 1
+      perPage: 1
 
   # ------------------------------------------------------------------
   # 2. Create new case or add comment to existing
   # ------------------------------------------------------------------
   - name: handle_case
     type: if
-    condition: "${{ steps.find_existing_case.output.total > 0 }}"
+    condition: "steps.find_existing_case.output.total > 0"
     steps:
       - name: update_existing
         type: foreach
         foreach: "${{ steps.find_existing_case.output.cases }}"
         steps:
           - name: add_case_comment
-            type: kibana.request
+            type: cases.addComment
             with:
-              method: POST
-              path: "__SPACE_PREFIX__/api/cases/{{ foreach.item.id }}/comments"
-              body:
-                type: user
-                owner: observability
-                comment: |
-                  ## Squawk 7500 Assessment — {{ inputs.icao24 }} ({{ inputs.callsign }})
+              case_id: "{{ foreach.item.id }}"
+              comment: |
+                ## Squawk 7500 Assessment — {{ inputs.icao24 }} ({{ inputs.callsign }})
 
-                  **AI Triage Assessment:** `{{ inputs.triage_assessment }}`
-                  **Confidence:** {{ inputs.confidence }}
+                **AI Triage Assessment:** `{{ inputs.triage_assessment }}`
+                **Confidence:** {{ inputs.confidence }}
 
-                  ### Reasoning
+                ### Reasoning
 
-                  {{ inputs.reasoning }}
+                {{ inputs.reasoning }}
+          - name: update_case_fields
+            type: cases.updateCase
+            with:
+              case_id: "{{ foreach.item.id }}"
+              updates:
+                status: in-progress
+                severity: "{{ inputs.confidence }}"
+                extended_fields:
+                  icao24_as_keyword: "{{ inputs.icao24 }}"
+                  callsign_as_keyword: "{{ inputs.callsign }}"
+                  triage_assessment_as_keyword: "{{ inputs.triage_assessment }}"
+                  confidence_as_keyword: "{{ inputs.confidence }}"
     else:
       - name: create_case
-        type: kibana.createCase
+        type: cases.createCase
         with:
           owner: observability
-          connector:
-            id: "none"
-            name: "none"
-            type: ".none"
-            fields: null
           settings:
             syncAlerts: true
           title: >-
@@ -95,6 +100,7 @@ steps:
             {{ inputs.callsign }}
             ({{ inputs.icao24 }})
           category: "Hijack Triage"
+          severity: "{{ inputs.confidence }}"
           description: |
             ## Squawk 7500 Assessment — {{ inputs.icao24 }} ({{ inputs.callsign }})
 
@@ -108,7 +114,6 @@ steps:
             - "squawk-7500"
             - "icao24:{{ inputs.icao24 }}"
             - "callsign:{{ inputs.callsign }}"
-            - "icao24:{{ inputs.icao24 }}:callsign:{{ inputs.callsign }}"
             - "triage:{{ inputs.triage_assessment }}"
           customFields:
             - key: icao24
@@ -123,3 +128,14 @@ steps:
             - key: confidence
               type: text
               value: "{{ inputs.confidence }}"
+          extended_fields:
+            icao24_as_keyword: "{{ inputs.icao24 }}"
+            callsign_as_keyword: "{{ inputs.callsign }}"
+            triage_assessment_as_keyword: "{{ inputs.triage_assessment }}"
+            confidence_as_keyword: "{{ inputs.confidence }}"
+
+  - name: return_outputs
+    type: data.set
+    with:
+      existing_case_search: "${{ steps.find_existing_case.output }}"
+      created_case: "${{ steps.create_case.output }}"

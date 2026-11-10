@@ -47,6 +47,8 @@ inputs:
         keep_null: false
         publisher_pipeline.disable_host: true
         resource.url: "https://opensky-network.org/api/states/all?lamin=0&lomin=-180&lamax=90&lomax=0"
+        state:
+          quadrant: adsb-q1
         resource.timeout: 90s
         resource.max_body_size: 52428800
         resource.retry.max_attempts: 3
@@ -76,6 +78,7 @@ inputs:
                     s.size() > 4 && s[0] != null && string(s[0]) != "" && (s[3] != null || s[4] != null)
                   ).map(s, {
                     "icao24": s[0],
+                    "ingest_quadrant": state.quadrant,
                     "callsign": s.size() > 1 ? s[1] : null,
                     "origin_country": s.size() > 2 ? s[2] : null,
                     "time_position": s.size() > 3 ? s[3] : null,
@@ -93,13 +96,25 @@ inputs:
                     "spi": s.size() > 15 ? s[15] : null,
                     "position_source": s.size() > 16 ? s[16] : null,
                     "location": s.size() > 6 && s[5] != null && s[6] != null ?
-                      {"lon": s[5], "lat": s[6]} : null,
-                    "@timestamp": int((s[3] != null ? s[3] : s[4]) * 1000)
+                      dyn({"lon": s[5], "lat": s[6]}) : dyn(null),
+                    "@timestamp": int((s[3] != null ? s[3] : s[4]) * 1000.0)
                   })
                 : []
               })
             :
-              {"events": []}
+              {
+                "events": {
+                  "ingest_quadrant": state.quadrant,
+                  "error": {
+                    "code": string(resp.StatusCode),
+                    "id": string(resp.Status),
+                    "message": "GET /api/states/all: " + (
+                      size(resp.Body) > 0 ? string(resp.Body) : string(resp.Status)
+                    )
+                  }
+                },
+                "want_more": false
+              }
           )
 
   - id: adsb-q2
@@ -114,6 +129,8 @@ inputs:
         keep_null: false
         publisher_pipeline.disable_host: true
         resource.url: "https://opensky-network.org/api/states/all?lamin=0&lomin=0&lamax=90&lomax=180"
+        state:
+          quadrant: adsb-q2
         resource.timeout: 90s
         resource.max_body_size: 52428800
         resource.retry.max_attempts: 3
@@ -135,6 +152,8 @@ inputs:
         keep_null: false
         publisher_pipeline.disable_host: true
         resource.url: "https://opensky-network.org/api/states/all?lamin=-90&lomin=-180&lamax=0&lomax=0"
+        state:
+          quadrant: adsb-q3
         resource.timeout: 90s
         resource.max_body_size: 52428800
         resource.retry.max_attempts: 3
@@ -156,6 +175,8 @@ inputs:
         keep_null: false
         publisher_pipeline.disable_host: true
         resource.url: "https://opensky-network.org/api/states/all?lamin=-90&lomin=0&lamax=0&lomax=180"
+        state:
+          quadrant: adsb-q4
         resource.timeout: 90s
         resource.max_body_size: 52428800
         resource.retry.max_attempts: 3

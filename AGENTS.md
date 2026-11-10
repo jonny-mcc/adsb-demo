@@ -9,7 +9,7 @@ ______________________________________________________________________
 Live aircraft position tracking on the Elastic Stack. A standalone Elastic Agent
 polls the [OpenSky Network](https://opensky-network.org) REST API for real-time ADS-B transponder
 data across four global quadrants and enriches each position with country/region geo-shapes and
-nearest-airport proximity. Logstash remains available as a fallback ingest engine. Data is
+airport coverage zones. Logstash remains available as a fallback ingest engine. Data is
 indexed into an Elasticsearch data stream for visualisation in Kibana. An Agent Builder +
 Workflows layer adds AI agents, daily briefings, and automated hijack (squawk 7500)
 investigation. See the [README](README.md) for architecture and setup detail.

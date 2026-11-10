@@ -8,15 +8,16 @@ ______________________________________________________________________
 
 ## Model
 
-Dashboards are **saved objects in source control**, not edited only in Kibana.
+Dashboards use a hybrid source-control model on the 9.5 baseline.
 
 | Layer | Location | Role |
 | ----- | -------- | ---- |
-| Source of truth | [`elasticsearch/kibana/adsb-saved-objects.ndjson`](../elasticsearch/kibana/adsb-saved-objects.ndjson) | Bundled ndjson export committed to git |
-| Deploy | `make deploy-kibana` → `setup.sh --only kibana` | Bulk import via Saved Objects API |
+| Spatial source | [`elasticsearch/kibana/adsb-saved-objects.ndjson`](../elasticsearch/kibana/adsb-saved-objects.ndjson) | Maps dashboards and their referenced saved objects |
+| Operations source | [`elasticsearch/kibana/adsb-operations-dashboard.json`](../elasticsearch/kibana/adsb-operations-dashboard.json) | Clean Dashboards API definition with inline ES\|QL and controls |
+| Deploy | `make deploy-kibana` → `setup.sh --only kibana` | Saved Objects import followed by Dashboards API upsert |
 | Runtime | Kibana space (`KB_SPACE`, default `adsb`) | Live dashboards users open in the UI |
 
-The ndjson file is a **single bundle** of related objects, not dashboards alone:
+The ndjson file remains a **single bundle** of related spatial objects:
 
 | Type | Count (approx.) | Examples |
 | ---- | --------------- | -------- |
@@ -26,8 +27,9 @@ The ndjson file is a **single bundle** of related objects, not dashboards alone:
 | `search` | 1 | Legacy saved searches still referenced by panels |
 | `tag` | 1 | _Demo_ tag |
 
-Import uses `POST /api/saved_objects/_import` against the space-aware `KB_BASE` URL
-(see [`testing-api.md`](testing-api.md#prerequisites)).
+Setup imports that bundle with `POST /api/saved_objects/_import`, then upserts the
+operations dashboard at the stable ID `adsb-operations-cases` with
+`PUT /api/dashboards/{id}`.
 
 ______________________________________________________________________
 
@@ -192,9 +194,10 @@ Known constraints for this project's dashboards (fixed in v1.11.1 unless noted):
 | Self-referencing drilldowns (Detail → Detail) | Remove; no useful navigation |
 | `write_restricted` access control | Removed from source; clear on live deployments manually if import does not drop it |
 
-**Do not** switch deploy to the new `POST /api/dashboards` API or Terraform provider yet:
-the tech-preview API strips unsupported panel types (Maps, Links) from this project's dashboards.
-Keep the ndjson + Saved Objects import pipeline.
+In 9.5 the Dashboards API is GA on Stack and supports Links, inline ES|QL
+visualisations, time sliders, and ES|QL controls. Maps still have no defined API
+schema and are rejected on write. Keep Maps in the saved-object bundle and use
+the Dashboards API for portable, non-spatial dashboards.
 
 ______________________________________________________________________
 

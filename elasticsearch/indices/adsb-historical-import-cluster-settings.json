@@ -1,0 +1,6 @@
+{
+  "persistent": {
+    "data_stream.past_tsdb_index_creation_enabled": true,
+    "data_streams.past_tsdb_index_interval": "2d"
+  }
+}

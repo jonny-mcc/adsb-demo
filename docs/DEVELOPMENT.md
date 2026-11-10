@@ -8,7 +8,7 @@ ______________________________________________________________________
 ## Tech Stack & Commands
 
 - **Runtime**: Docker & Docker Compose
-- **Data pipeline**: Elastic Agent 9.x (CEL inputs polling the OpenSky Network API; Logstash is an optional fallback)
+- **Data pipeline**: Elastic Agent 9.5+ (CEL inputs polling the OpenSky Network API; Logstash is an optional fallback)
 - **Search & storage**: Elasticsearch (time-series data stream with geo-shape enrichment)
 - **Visualisation**: Kibana (dashboards, data views)
 - **Setup automation**: Bash (`setup.sh`)
@@ -18,7 +18,8 @@ ______________________________________________________________________
 | `cp .env.example .env`       | Create local environment config                                          |
 | `make setup`                 | Create ES indices, enrich policy, ingest pipeline, import Kibana objects |
 | `make setup-no-service-user` | Run full setup without service user (actions attributed to .env API key) |
-| `make deploy-ilm`            | Deploy ES ILM policy only (skipped on Serverless)                        |
+| `make create-ingest-key`      | Create a least-privilege runtime ingest API key                          |
+| `make deploy-ilm`            | Deploy the legacy ILM compatibility policy                              |
 | `make deploy-indices`        | Deploy ES index templates and data streams only                          |
 | `make deploy-enrich`         | Deploy ES enrich policies only                                           |
 | `make deploy-pipelines`      | Deploy ES ingest pipelines only                                          |
@@ -29,7 +30,7 @@ ______________________________________________________________________
 | `make deploy-skills`         | Deploy Agent Builder skills only                                         |
 | `make deploy-agents`         | Deploy Kibana AI agents only                                             |
 | `make deploy-demouser`       | Deploy demo user roles and users only                                    |
-| `make deploy-es`             | Deploy all ES resources (ilm + indices + enrich + pipelines)             |
+| `make deploy-es`             | Deploy all default ES resources (indices + enrich + pipelines)           |
 | `make deploy-ai`             | Deploy AI layer (workflows + tools + skills + agents)                    |
 | `make redeploy`              | Re-deploy all resources (force overwrite)                                |
 | `make up`                    | Start ingest (Elastic Agent by default; `INGEST_ENGINE=logstash` for Logstash) |
@@ -39,6 +40,7 @@ ______________________________________________________________________
 | `make status`                | Show ingest status                                                       |
 | `make clean`                 | Stop ingest and remove volumes                                           |
 | `make validate`              | Validate Docker Compose config                                           |
+| `make validate-static`       | Validate Bash syntax and source-controlled JSON assets                   |
 | `make health`                | Check Elasticsearch cluster health                                       |
 | `make ps`                    | Show running containers                                                  |
 | `make shell`                 | Open a shell inside the running ingest container                         |
@@ -84,10 +86,11 @@ ______________________________________________________________________
 
 After code changes:
 
-1. Verify Docker Compose config parses: `docker compose config --quiet`
+1. Run static validation: `make validate-static`.
+2. Verify Docker Compose config parses: `docker compose config --quiet`
    (request `required_permissions: ["all"]`; see [Docker Access](#docker-access)).
-2. If ingest configs changed, `make validate` then `make restart`.
-3. Summarise edits, mention tests, and flag follow-up work in the final response.
+3. If ingest configs changed, `make validate` then `make restart`.
+4. Summarise edits, mention tests, and flag follow-up work in the final response.
 
 ______________________________________________________________________
 

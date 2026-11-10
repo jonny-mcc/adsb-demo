@@ -1,5 +1,8 @@
 {
   "mappings": {
+    "_meta": {
+      "geo.airspace": "Generated airport coverage zone; not regulated airspace or a nearest-airport calculation"
+    },
     "properties": {
       "abbrev":       { "type": "keyword" },
       "comments":     { "type": "keyword" },

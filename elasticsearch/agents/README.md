@@ -281,8 +281,8 @@ flowchart TD
 
 The agent considers these factors in order of importance:
 
-1. **Ground status and airport proximity** -- aircraft on the ground or at very
-   low altitude near an airport is a strong false-positive indicator
+1. **Ground status and airport coverage zone** -- aircraft on the ground or at
+   very low altitude inside an airport coverage zone is a strong false-positive indicator
    (maintenance, ground testing, student pilot).
 2. **Expected route vs actual position** -- significant deviation from the
    adsbdb expected route could indicate forced diversion.
@@ -329,6 +329,12 @@ make setup
 The deploy order matters: workflows must exist before tools (tools need the live
 workflow UUID), and skills must exist before agents (agents reference skill IDs).
 The full `make setup` handles this automatically.
+
+On Kibana 9.5, set `HIJACK_AGENT_ALLOWED_USERS` to a comma-separated list of
+Kibana usernames to deploy the hijack assessment agent in private mode and
+grant those users the `user` access-control role. Leave it empty to preserve
+the public-agent behaviour. The users still need Agent Builder Read, Workflows
+Read and Execute, and read access to the ADS-B data.
 
 See the project [README](../../README.md) and [AGENTS.md](../../AGENTS.md) for
 full setup instructions, and the [workflows README](../workflows/README.md) for

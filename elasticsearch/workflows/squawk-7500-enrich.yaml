@@ -1,3 +1,4 @@
+version: "1"
 name: Squawk 7500 Enrich
 description: >-
   Gathers enrichment data for a squawk 7500 investigation — flight history
@@ -7,37 +8,25 @@ description: >-
 enabled: true
 tags: ["adsb", "squawk-7500", "enrichment"]
 
-outputs:
-  flight_history:
-    value: "${{ steps.flight_history.output }}"
-  latest_position:
-    value: "${{ steps.latest_position.output }}"
-  adsbdb_aircraft:
-    value: "${{ steps.adsbdb_aircraft.output }}"
-  adsbdb_route:
-    value: "${{ steps.adsbdb_route.output }}"
-  adsblol_lookup:
-    value: "${{ steps.adsblol_lookup.output }}"
-  news_search:
-    value: "${{ steps.news_search.output }}"
-
 consts:
   indexName: "demos-aircraft-adsb"
   historyWindow: "now-6h"
 
-inputs:
-  - name: icao24
-    type: string
-    required: true
-    description: "ICAO 24-bit aircraft address (hex, e.g. A9ED41)"
-  - name: callsign
-    type: string
-    required: false
-    default: ""
-    description: "Flight callsign (e.g. DAL1234). Optional but improves adsbdb route lookup."
-
 triggers:
   - type: manual
+    inputs:
+      properties:
+        icao24:
+          type: string
+          pattern: "^[0-9A-Fa-f]{6}$"
+          description: "ICAO 24-bit aircraft address (hex, e.g. A9ED41)"
+        callsign:
+          type: string
+          pattern: "^[A-Za-z0-9 ]{0,12}$"
+          default: ""
+          description: "Flight callsign (e.g. DAL1234). Optional but improves adsbdb route lookup."
+      required:
+        - icao24
 
 steps:
   # ------------------------------------------------------------------
@@ -89,45 +78,18 @@ steps:
     on-failure:
       continue: true
 
-  # WORKAROUND(#9): Write adsbdb response to cache index
-  - name: cache_adsbdb
-    type: elasticsearch.request
-    with:
-      method: PUT
-      path: "/adsb-enrichment-cache/_doc/adsbdb:{{ inputs.icao24 }}"
-      body:
-        type: "adsbdb_aircraft"
-        icao24: "{{ inputs.icao24 }}"
-        raw: "{{ steps.adsbdb_aircraft.output | json }}"
-    on-failure:
-      continue: true
-
   # ------------------------------------------------------------------
   # 3b. adsbdb — expected route (only when callsign provided)
   # ------------------------------------------------------------------
   - name: has_callsign
     type: if
-    condition: "${{ inputs.callsign != '' }}"
+    condition: "inputs.callsign : *"
     steps:
       - name: adsbdb_route
         type: http
         with:
           url: "https://api.adsbdb.com/v0/callsign/{{ inputs.callsign }}"
           method: GET
-        on-failure:
-          continue: true
-
-      # WORKAROUND(#9): Write adsbdb route response to cache index
-      - name: cache_adsbdb_route
-        type: elasticsearch.request
-        with:
-          method: PUT
-          path: "/adsb-enrichment-cache/_doc/adsbdb_route:{{ inputs.callsign }}"
-          body:
-            type: "adsbdb_route"
-            callsign: "{{ inputs.callsign }}"
-            icao24: "{{ inputs.icao24 }}"
-            raw: "{{ steps.adsbdb_route.output | json }}"
         on-failure:
           continue: true
 
@@ -142,19 +104,6 @@ steps:
     on-failure:
       continue: true
 
-  # WORKAROUND(#9): Write adsb.lol response to cache index
-  - name: cache_adsblol
-    type: elasticsearch.request
-    with:
-      method: PUT
-      path: "/adsb-enrichment-cache/_doc/adsblol:{{ inputs.icao24 }}"
-      body:
-        type: "adsblol_position"
-        icao24: "{{ inputs.icao24 }}"
-        raw: "{{ steps.adsblol_lookup.output | json }}"
-    on-failure:
-      continue: true
-
   # ------------------------------------------------------------------
   # 5. GNews — news search (optional, needs GNEWS_API_KEY)
   # ------------------------------------------------------------------
@@ -166,16 +115,12 @@ steps:
     on-failure:
       continue: true
 
-  # WORKAROUND(#9): Write GNews response to cache index
-  - name: cache_gnews
-    type: elasticsearch.request
+  - name: return_outputs
+    type: data.set
     with:
-      method: PUT
-      path: "/adsb-enrichment-cache/_doc/gnews:{{ inputs.callsign }}"
-      body:
-        type: "gnews_search"
-        callsign: "{{ inputs.callsign }}"
-        icao24: "{{ inputs.icao24 }}"
-        raw: "{{ steps.news_search.output | json }}"
-    on-failure:
-      continue: true
+      flight_history: "${{ steps.flight_history.output }}"
+      latest_position: "${{ steps.latest_position.output }}"
+      adsbdb_aircraft: "${{ steps.adsbdb_aircraft.output }}"
+      adsbdb_route: "${{ steps.adsbdb_route.output }}"
+      adsblol_lookup: "${{ steps.adsblol_lookup.output }}"
+      news_search: "${{ steps.news_search.output }}"

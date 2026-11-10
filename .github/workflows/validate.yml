@@ -1,0 +1,78 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      validate_deployments:
+        description: Run setup and validation against configured deployment environments
+        required: false
+        type: boolean
+        default: false
+      run_workflow_e2e:
+        description: Execute workflow tools (uses external APIs and creates a validation Case)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell and JSON
+        run: bash tests/validate-static.sh
+      - name: Run ShellCheck
+        run: shellcheck --severity=error setup.sh tests/validate-static.sh tests/validate-deployment.sh
+      - name: Validate Compose model
+        run: docker compose --env-file .env.example config --quiet
+
+  deployments:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_deployments }}
+    strategy:
+      fail-fast: false
+      matrix:
+        deployment: [cloud-hosted, start-local, serverless]
+    runs-on: ubuntu-latest
+    environment: adsb-${{ matrix.deployment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare deployment credentials
+        env:
+          ES_ENDPOINT: ${{ secrets.ES_ENDPOINT }}
+          ES_API_KEY_ENCODED: ${{ secrets.ES_API_KEY_ENCODED }}
+          KB_ENDPOINT: ${{ secrets.KB_ENDPOINT }}
+          KB_SPACE: ${{ vars.KB_SPACE }}
+        run: |
+          {
+            printf 'ES_ENDPOINT=%s\n' "$ES_ENDPOINT"
+            printf 'ES_API_KEY_ENCODED=%s\n' "$ES_API_KEY_ENCODED"
+            printf 'KB_ENDPOINT=%s\n' "$KB_ENDPOINT"
+            printf 'KB_SPACE=%s\n' "$KB_SPACE"
+          } > "$RUNNER_TEMP/adsb.env"
+      - name: Deploy modernised resources
+        env:
+          ENV_FILE: ${{ runner.temp }}/adsb.env
+        run: >-
+          ./setup.sh --no-service-user --force
+          --only space,indices,enrich,pipelines,kibana,cases,workflows,tools,skills,agents
+      - name: Verify idempotent rerun
+        env:
+          ENV_FILE: ${{ runner.temp }}/adsb.env
+        run: >-
+          ./setup.sh --no-service-user
+          --only space,indices,enrich,pipelines,kibana,cases,workflows,tools,skills,agents
+      - name: Validate deployed resources
+        env:
+          ES_ENDPOINT: ${{ secrets.ES_ENDPOINT }}
+          ES_API_KEY_ENCODED: ${{ secrets.ES_API_KEY_ENCODED }}
+          KB_ENDPOINT: ${{ secrets.KB_ENDPOINT }}
+          KB_SPACE: ${{ vars.KB_SPACE }}
+          DEPLOYMENT_TYPE: ${{ matrix.deployment }}
+          RUN_WORKFLOW_E2E: ${{ inputs.run_workflow_e2e }}
+        run: bash tests/validate-deployment.sh
