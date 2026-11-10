@@ -59,13 +59,13 @@ jobs:
         env:
           ENV_FILE: ${{ runner.temp }}/adsb.env
         run: >-
-          ./setup.sh --no-service-user --force
+          ./setup.sh --force
           --only space,indices,enrich,pipelines,kibana,cases,workflows,tools,skills,agents
       - name: Verify idempotent rerun
         env:
           ENV_FILE: ${{ runner.temp }}/adsb.env
         run: >-
-          ./setup.sh --no-service-user
+          ./setup.sh
           --only space,indices,enrich,pipelines,kibana,cases,workflows,tools,skills,agents
       - name: Validate deployed resources
         env:

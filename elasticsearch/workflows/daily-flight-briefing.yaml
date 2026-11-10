@@ -119,6 +119,7 @@ steps:
       tags:
         - squawk-7500
       owner: observability
+      from: "now-24h"
       page: 1
       perPage: 100
       sortField: createdAt

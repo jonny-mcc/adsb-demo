@@ -79,19 +79,15 @@ steps:
       continue: true
 
   # ------------------------------------------------------------------
-  # 3b. adsbdb — expected route (only when callsign provided)
+  # 3b. adsbdb — expected route (a missing callsign returns a handled error)
   # ------------------------------------------------------------------
-  - name: has_callsign
-    type: if
-    condition: "inputs.callsign : *"
-    steps:
-      - name: adsbdb_route
-        type: http
-        with:
-          url: "https://api.adsbdb.com/v0/callsign/{{ inputs.callsign }}"
-          method: GET
-        on-failure:
-          continue: true
+  - name: adsbdb_route
+    type: http
+    with:
+      url: "https://api.adsbdb.com/v0/callsign/{{ inputs.callsign }}"
+      method: GET
+    on-failure:
+      continue: true
 
   # ------------------------------------------------------------------
   # 4. adsb.lol — live position cross-reference (always fetch fresh)

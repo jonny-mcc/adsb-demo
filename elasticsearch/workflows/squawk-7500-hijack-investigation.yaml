@@ -140,17 +140,13 @@ steps:
         on-failure:
           continue: true
 
-      - name: has_callsign
-        type: if
-        condition: "event.alerts[0].kibana.alert.grouping.callsign : *"
-        steps:
-          - name: adsbdb_route
-            type: http
-            with:
-              url: "https://api.adsbdb.com/v0/callsign/{{ event.alerts[0].kibana.alert.grouping.callsign }}"
-              method: GET
-            on-failure:
-              continue: true
+      - name: adsbdb_route
+        type: http
+        with:
+          url: "https://api.adsbdb.com/v0/callsign/{{ event.alerts[0].kibana.alert.grouping.callsign }}"
+          method: GET
+        on-failure:
+          continue: true
 
       - name: adsblol_lookup
         type: http

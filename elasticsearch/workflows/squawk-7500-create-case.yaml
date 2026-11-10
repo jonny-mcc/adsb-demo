@@ -88,6 +88,11 @@ steps:
                   callsign_as_keyword: "{{ inputs.callsign }}"
                   triage_assessment_as_keyword: "{{ inputs.triage_assessment }}"
                   confidence_as_keyword: "{{ inputs.confidence }}"
+      - name: set_updated_case_result
+        type: data.set
+        with:
+          case_action: updated
+          case: "${{ steps.find_existing_case.output.cases[0] }}"
     else:
       - name: create_case
         type: cases.createCase
@@ -133,9 +138,15 @@ steps:
             callsign_as_keyword: "{{ inputs.callsign }}"
             triage_assessment_as_keyword: "{{ inputs.triage_assessment }}"
             confidence_as_keyword: "{{ inputs.confidence }}"
+      - name: set_created_case_result
+        type: data.set
+        with:
+          case_action: created
+          case: "${{ steps.create_case.output.case }}"
 
   - name: return_outputs
     type: data.set
     with:
       existing_case_search: "${{ steps.find_existing_case.output }}"
-      created_case: "${{ steps.create_case.output }}"
+      case_action: "{{ variables.case_action }}"
+      case: "${{ variables.case }}"

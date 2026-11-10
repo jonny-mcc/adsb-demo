@@ -50,7 +50,7 @@ steps:
         | SORT aircraft_count DESC, callsign_prefix ASC
         | LIMIT 100
       params:
-        - "${{ inputs.lookback_hours }}"
+        - "${{ inputs.lookback_hours | default: 24 }}"
 
   - name: return_outputs
     type: data.set

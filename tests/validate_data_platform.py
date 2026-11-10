@@ -130,6 +130,26 @@ def validate_dashboard_as_code() -> None:
     assert sum("?_tstart" in query and "?_tend" in query for query in queries) == 3
 
 
+def validate_workflow_runtime_guards() -> None:
+    workflows = ROOT / "elasticsearch/workflows"
+    detector = (workflows / "adsb-defunct-callsign-detector.yaml").read_text()
+    assert "inputs.lookback_hours | default: 24" in detector
+
+    for name in ("daily-flight-briefing.yaml", "hijack-cases-summary.yaml"):
+        assert 'from: "now-24h"' in (workflows / name).read_text()
+
+    enrich = (workflows / "squawk-7500-enrich.yaml").read_text()
+    investigation = (
+        workflows / "squawk-7500-hijack-investigation.yaml"
+    ).read_text()
+    assert "name: has_callsign" not in enrich
+    assert "name: has_callsign" not in investigation
+
+    create_case = (workflows / "squawk-7500-create-case.yaml").read_text()
+    assert 'case_action: "{{ variables.case_action }}"' in create_case
+    assert 'case: "${{ variables.case }}"' in create_case
+
+
 def main() -> None:
     for path in (ROOT / "elasticsearch/indices").glob("*.json"):
         load_json(path)
@@ -140,6 +160,7 @@ def main() -> None:
     validate_lifecycle_and_import()
     validate_agent_errors()
     validate_dashboard_as_code()
+    validate_workflow_runtime_guards()
     print("Data-platform configuration is valid")
 
 
