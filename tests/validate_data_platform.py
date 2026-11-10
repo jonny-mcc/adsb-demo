@@ -2,6 +2,7 @@
 """Validate the source-controlled ADS-B data-platform configuration."""
 
 import json
+import re
 from pathlib import Path
 
 
@@ -243,6 +244,17 @@ def validate_opensky_integration_mode() -> None:
     assert "OPENSKY_INTEGRATION_DATA_STREAM=logs-opensky.state_vector-default" in (
         env_example
     )
+    assert "OPENSKY_API_CLIENT_ID=" in env_example
+    assert "OPENSKY_API_CLIENT_SECRET=" in env_example
+    assert "OPENSKY_API_USER=" not in env_example
+    assert "OPENSKY_API_PW=" not in env_example
+
+    example_names = set(
+        re.findall(r"^([A-Z][A-Z0-9_]*)=", env_example, re.MULTILINE)
+    )
+    compose = (ROOT / "docker-compose.yml").read_text()
+    compose_names = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", compose))
+    assert compose_names <= example_names
 
 
 def main() -> None:
