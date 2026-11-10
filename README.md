@@ -40,7 +40,7 @@ Each input covers one quadrant of the globe. Splitting the world into four small
 | `adsb-q3` | South-West (Americas/South) | lat -90 to 0, lon -180 to 0 |
 | `adsb-q4` | South-East (Africa/Oceania) | lat -90 to 0, lon 0 to 180  |
 
-All four pipelines write to the same `demos-aircraft-adsb` data stream. An ingest pipeline enriches each document with country/region metadata and matching airport coverage zones via geo-shape enrich policies.
+The local Agent and Logstash paths write to the `demos-aircraft-adsb` data stream. An ingest pipeline enriches each document with country/region metadata and matching airport coverage zones via geo-shape enrich policies.
 
 ### Pipeline Design — Polling with OAuth2
 
@@ -67,6 +67,36 @@ sequenceDiagram
 Four CEL inputs (`adsb-q1`–`adsb-q4`) run in one Agent process, one per bounding box. A failed HTTP call yields an empty event batch for that interval rather than blocking the other quadrants.
 
 **Logstash fallback** — set `INGEST_ENGINE=logstash` in `.env` (or `make up INGEST_ENGINE=logstash`). The Logstash pipelines remain in `logstash/pipeline/` and use the older heartbeat → OAuth2 `http` filter → API `http` filter chain, because Logstash `http_poller` cannot perform an OAuth2 token exchange. Do not run both engines at once against the same cluster; they would double-index.
+
+### Fleet-managed OpenSky integration
+
+The demo can use the **OpenSky Network** Elastic integration instead of its
+local collector. The compatibility path targets the integration's
+`opensky.state_vector` data stream and preserves the integration's ECS fields
+while adding the top-level fields and geo enrichment expected by this demo.
+
+1. Install the OpenSky integration in Fleet, enable **All-aircraft positions**,
+   and wait for its first successful poll.
+2. Set `INGEST_ENGINE=opensky_integration` in `.env`.
+3. Set `OPENSKY_INTEGRATION_DATA_STREAM` to the concrete stream for the policy
+   namespace, for example `logs-opensky.state_vector-default`.
+4. Run `make setup`. Do not start the local Agent or Logstash collector.
+
+Setup connects `demo-aircraft-adsb.opensky-compat` through the supported
+`logs-opensky.state_vector@custom` ingest pipeline and merges the corresponding
+field mappings into the data stream's `@custom` component template. The
+pipeline copies `host.id`, `host.geo.location`, and
+`opensky.state_vector.*` into the demo field contract, applies country and
+airport coverage-zone enrichment, and exposes the stream through the read-only
+`demos-aircraft-adsb` data-stream alias. New documents are compatible
+immediately; documents indexed before compatibility setup retain only the
+integration's native field shape.
+
+To return from Fleet mode to local Agent or Logstash ingest, change
+`INGEST_ENGINE` and rerun `make setup`; setup removes the compatibility alias
+before the local collector writes. Moving an existing local deployment to
+Fleet mode requires a clean deployment because setup will not delete or
+replace the existing `demos-aircraft-adsb` data stream.
 
 ### AI Agent
 
@@ -162,7 +192,8 @@ POST /_security/api_key
           "names": [
             "geo.shapes-world.countries-50m",
             "adsb*",
-            "demos-aircraft-adsb*"
+            "demos-aircraft-adsb*",
+            "logs-opensky.state_vector-*"
           ],
           "privileges": ["create_index", "write", "read", "view_index_metadata", "manage"]
         },
@@ -283,19 +314,28 @@ Demo users are also created automatically as part of `make setup`. Use `--no-ser
 ```bash
 make up           # Elastic Agent (default)
 # make up INGEST_ENGINE=logstash   # legacy Logstash pipelines
+# make up INGEST_ENGINE=opensky_integration  # Fleet manages ingest; starts nothing locally
 ```
 
-All four quadrant inputs start automatically. Each polls OpenSky every 6 minutes and writes to the `demos-aircraft-adsb` data stream.
+For the local Agent or Logstash paths, all four quadrant inputs start
+automatically and write to `demos-aircraft-adsb`. In
+`opensky_integration` mode, Fleet owns collection and `make up` only confirms
+that no local container is required.
 
-To switch engines, stop the current one first (`make down`) so you do not double-index.
+To switch engines, stop the current collector first (`make down` locally, or
+disable the integration in Fleet), then rerun `make setup` with the new
+`INGEST_ENGINE` before `make up`.
 
 ### 5. Verify
 
-Check logs:
+For local Agent or Logstash ingest, check logs:
 
 ```bash
 make logs         # or: docker compose logs -f
 ```
+
+In `opensky_integration` mode, `make logs` directs you to Fleet, where the
+integration status and managed agent logs are available.
 
 Confirm ingest is running:
 
@@ -303,7 +343,10 @@ Confirm ingest is running:
 make status
 ```
 
-For Elastic Agent you should see the `adsb-q1`–`adsb-q4` CEL units. For Logstash you should see pipelines `adsb-q1` through `adsb-q4`.
+For Elastic Agent you should see the `adsb-q1`–`adsb-q4` CEL units. For
+Logstash you should see pipelines `adsb-q1` through `adsb-q4`. For the OpenSky
+integration, verify a healthy `opensky.state_vector` stream in Fleet and
+documents in the configured `logs-opensky.state_vector-*` data stream.
 
 ## Stopping
 

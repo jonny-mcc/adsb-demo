@@ -1,0 +1,165 @@
+{
+  "description": "Expose OpenSky integration state-vector fields through the ADS-B demo field contract and apply demo geo enrichment.",
+  "processors": [
+    {
+      "set": {
+        "field": "icao24",
+        "copy_from": "host.id",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "location",
+        "copy_from": "host.geo.location",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "if": "ctx.event?.created != null",
+        "field": "time_position",
+        "copy_from": "@timestamp",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "last_contact",
+        "copy_from": "event.created",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "if": "ctx.last_contact == null",
+        "field": "last_contact",
+        "copy_from": "@timestamp",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "ingest_quadrant",
+        "value": "opensky-integration"
+      }
+    },
+    {
+      "set": {
+        "field": "callsign",
+        "copy_from": "opensky.state_vector.callsign",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "origin_country",
+        "copy_from": "opensky.state_vector.origin_country",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "latitude",
+        "copy_from": "opensky.state_vector.latitude",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "longitude",
+        "copy_from": "opensky.state_vector.longitude",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "baro_altitude",
+        "copy_from": "opensky.state_vector.baro_altitude",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "geo_altitude",
+        "copy_from": "opensky.state_vector.geo_altitude",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "on_ground",
+        "copy_from": "opensky.state_vector.on_ground",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "velocity",
+        "copy_from": "opensky.state_vector.velocity",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "true_track",
+        "copy_from": "opensky.state_vector.true_track",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "vertical_rate",
+        "copy_from": "opensky.state_vector.vertical_rate",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "sensors",
+        "copy_from": "opensky.state_vector.sensors",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "squawk",
+        "copy_from": "opensky.state_vector.squawk",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "spi",
+        "copy_from": "opensky.state_vector.spi",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "position_source",
+        "copy_from": "opensky.state_vector.position_source",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "set": {
+        "field": "category",
+        "copy_from": "opensky.state_vector.category",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "pipeline": {
+        "name": "demo-aircraft-adsb.opensky"
+      }
+    },
+    {
+      "append": {
+        "field": "tags",
+        "value": "adsb_demo_compatible",
+        "allow_duplicates": false
+      }
+    }
+  ]
+}

@@ -8,7 +8,7 @@ ______________________________________________________________________
 ## Tech Stack & Commands
 
 - **Runtime**: Docker & Docker Compose
-- **Data pipeline**: Elastic Agent 9.5+ (CEL inputs polling the OpenSky Network API; Logstash is an optional fallback)
+- **Data pipeline**: Elastic Agent 9.5+ (local CEL inputs or the Fleet-managed OpenSky integration; Logstash is an optional fallback)
 - **Search & storage**: Elasticsearch (time-series data stream with geo-shape enrichment)
 - **Visualisation**: Kibana (dashboards, data views)
 - **Setup automation**: Bash (`setup.sh`)
@@ -33,7 +33,7 @@ ______________________________________________________________________
 | `make deploy-es`             | Deploy all default ES resources (indices + enrich + pipelines)           |
 | `make deploy-ai`             | Deploy AI layer (workflows + tools + skills + agents)                    |
 | `make redeploy`              | Re-deploy all resources (force overwrite)                                |
-| `make up`                    | Start ingest (Elastic Agent by default; `INGEST_ENGINE=logstash` for Logstash) |
+| `make up`                    | Start local ingest, or confirm Fleet-managed `opensky_integration` mode        |
 | `make down`                  | Stop ingest (both Agent and Logstash profiles)                           |
 | `make logs`                  | Tail ingest logs                                                         |
 | `make restart`               | Restart running ingest containers after config changes                   |
@@ -54,7 +54,8 @@ ______________________________________________________________________
 
 - Never edit `.env` directly in commits; only reference `.env.example`.
 - Elastic Agent policy lives in `elastic-agent/elastic-agent.yml`; Logstash pipeline configs live in `logstash/pipeline/`; Elasticsearch resources in `elasticsearch/`.
-- The four quadrant inputs (`adsb-q1`–`adsb-q4`) are intentionally separate to spread load across bounding boxes.
+- The four local quadrant inputs (`adsb-q1`–`adsb-q4`) are intentionally separate to spread load across bounding boxes.
+- `INGEST_ENGINE=opensky_integration` uses `logs-opensky.state_vector@custom` to preserve the package's native ECS fields while adding the demo field contract and enrichment.
 
 ______________________________________________________________________
 

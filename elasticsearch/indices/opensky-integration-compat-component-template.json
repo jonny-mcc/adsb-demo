@@ -1,0 +1,73 @@
+{
+  "template": {
+    "mappings": {
+      "properties": {
+        "icao24": { "type": "keyword" },
+        "callsign": { "type": "keyword" },
+        "origin_country": { "type": "keyword" },
+        "time_position": { "type": "date" },
+        "last_contact": { "type": "date" },
+        "latitude": { "type": "double" },
+        "longitude": { "type": "double" },
+        "baro_altitude": { "type": "double" },
+        "geo_altitude": { "type": "double" },
+        "on_ground": { "type": "boolean" },
+        "velocity": { "type": "double" },
+        "true_track": { "type": "double" },
+        "vertical_rate": { "type": "double" },
+        "sensors": { "type": "long" },
+        "squawk": { "type": "keyword" },
+        "spi": { "type": "boolean" },
+        "position_source": { "type": "long" },
+        "category": { "type": "long" },
+        "ingest_quadrant": { "type": "keyword" },
+        "location": { "type": "geo_point" },
+        "error": {
+          "properties": {
+            "enrich": {
+              "properties": {
+                "country": { "type": "keyword", "ignore_above": 1024 },
+                "airport": { "type": "keyword", "ignore_above": 1024 }
+              }
+            }
+          }
+        },
+        "geo": {
+          "properties": {
+            "ADM0_A3": { "type": "keyword" },
+            "ADMIN": { "type": "keyword" },
+            "BRK_A3": { "type": "keyword" },
+            "CONTINENT": { "type": "keyword" },
+            "ISO_A3": { "type": "keyword" },
+            "NAME": { "type": "keyword" },
+            "NAME_LONG": { "type": "keyword" },
+            "REGION_UN": { "type": "keyword" },
+            "REGION_WB": { "type": "keyword" },
+            "SOVEREIGNT": { "type": "keyword" },
+            "SUBREGION": { "type": "keyword" }
+          }
+        },
+        "airport": {
+          "properties": {
+            "name": { "type": "keyword" },
+            "name_en": { "type": "keyword" },
+            "iata_code": { "type": "keyword" },
+            "gps_code": { "type": "keyword" },
+            "type": { "type": "keyword" },
+            "geo": {
+              "properties": {
+                "location": { "type": "geo_point" }
+              }
+            },
+            "wikipedia": { "type": "keyword" },
+            "activity": { "type": "keyword" },
+            "match_type": { "type": "keyword" }
+          }
+        }
+      }
+    }
+  },
+  "_meta": {
+    "adsb_demo_compatibility": true
+  }
+}

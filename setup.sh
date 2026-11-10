@@ -120,7 +120,10 @@ group_step_count() {
     ingestkey) echo 1 ;;
     space) echo 1 ;;  ilm)       echo 1 ;;
     indices) echo 9 ;; enrich)   echo 4 ;;
-    pipelines) echo 2 ;; kibana) echo 1 ;;
+    pipelines)
+      if [[ "${INGEST_ENGINE:-agent}" == "opensky_integration" ]]; then echo 8; else echo 2; fi
+      ;;
+    kibana) echo 1 ;;
     cases) echo 1 ;;  agents)    echo 3 ;;
     workflows) echo 14 ;; tools) echo 15 ;;
     skills) echo 7 ;; demouser) echo 1 ;;
@@ -236,7 +239,7 @@ setup_serviceuser() {
   role_payload=$(jq -n --arg resource "$kibana_resource" '{
     cluster: ["manage", "manage_own_api_key"],
     indices: [{
-      names: ["geo.shapes-world.countries-50m", "adsb*", "demos-aircraft-adsb*"],
+      names: ["geo.shapes-world.countries-50m", "adsb*", "demos-aircraft-adsb*", "logs-opensky.state_vector-*"],
       privileges: ["create_index", "write", "read", "view_index_metadata", "manage"]
     }],
     applications: [{
@@ -753,6 +756,241 @@ setup_enrich() {
     "airport coverage zone"
 }
 
+setup_opensky_integration_compat() {
+  local data_stream="${OPENSKY_INTEGRATION_DATA_STREAM:-logs-opensky.state_vector-default}"
+  local custom_component="logs-opensky.state_vector@custom"
+  local custom_pipeline="logs-opensky.state_vector@custom"
+  local canonical_alias="demos-aircraft-adsb"
+  local integration_namespace=""
+  local alias_exists=false
+
+  if [[ "$data_stream" == logs-opensky.state_vector-* ]]; then
+    integration_namespace="${data_stream#logs-opensky.state_vector-}"
+  fi
+  if [[ -z "$integration_namespace" ]]; then
+    echo "ERROR: OPENSKY_INTEGRATION_DATA_STREAM must match logs-opensky.state_vector-<namespace>." >&2
+    exit 1
+  fi
+
+  step_label "Verifying OpenSky integration data stream '$data_stream'"
+  local check_tmp check_http
+  check_tmp=$(mktemp)
+  check_http=$(curl -s -w '%{http_code}' -o "$check_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/_data_stream/$data_stream")
+  if [[ "$check_http" != "200" ]]; then
+    echo "  FAILED: OpenSky integration data stream '$data_stream' was not found." >&2
+    echo "  Install the OpenSky integration and wait for its first state-vector poll, or set OPENSKY_INTEGRATION_DATA_STREAM." >&2
+    cat "$check_tmp" >&2
+    rm -f "$check_tmp"
+    exit 1
+  fi
+  rm -f "$check_tmp"
+  echo "  Found"
+
+  check_tmp=$(mktemp)
+  check_http=$(curl -s -w '%{http_code}' -o "$check_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/_index_template/logs-opensky.state_vector")
+  if [[ "$check_http" != "200" ]] || ! jq -e --arg component "$custom_component" \
+    '.index_templates[0].index_template.composed_of | index($component)' \
+    "$check_tmp" >/dev/null; then
+    echo "  FAILED: the installed OpenSky package does not expose the expected '$custom_component' extension point." >&2
+    echo "  Upgrade the OpenSky integration before enabling compatibility mode." >&2
+    cat "$check_tmp" >&2
+    rm -f "$check_tmp"
+    exit 1
+  fi
+  rm -f "$check_tmp"
+
+  check_tmp=$(mktemp)
+  check_http=$(curl -s -w '%{http_code}' -o "$check_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/$data_stream/_field_caps?fields=host.id,host.geo.location,opensky.state_vector.callsign,opensky.state_vector.squawk")
+  if [[ "$check_http" != "200" ]] || ! jq -e '
+    .fields["host.id"]
+    and .fields["host.geo.location"]
+    and .fields["opensky.state_vector.callsign"]
+    and .fields["opensky.state_vector.squawk"]
+  ' "$check_tmp" >/dev/null; then
+    echo "  FAILED: '$data_stream' does not expose the OpenSky state-vector field contract." >&2
+    cat "$check_tmp" >&2
+    rm -f "$check_tmp"
+    exit 1
+  fi
+  rm -f "$check_tmp"
+
+  # Preflight the canonical alias before mutating any Fleet resources.
+  local alias_tmp alias_http
+  alias_tmp=$(mktemp)
+  alias_http=$(curl -s -w '%{http_code}' -o "$alias_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/_data_stream/_alias/$canonical_alias")
+  if [[ "$alias_http" == "200" ]]; then
+    if ! jq -e --arg stream "$data_stream" '
+      .data_streams | length == 1 and .[0].name == $stream
+    ' "$alias_tmp" >/dev/null; then
+      echo "  FAILED: data stream alias '$canonical_alias' must target only '$data_stream'." >&2
+      cat "$alias_tmp" >&2
+      rm -f "$alias_tmp"
+      exit 1
+    fi
+    alias_exists=true
+  elif [[ "$alias_http" == "404" ]]; then
+    local conflict_http
+    conflict_http=$(curl -s -o /dev/null -w '%{http_code}' \
+      -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+      "$BASE/_data_stream/$canonical_alias")
+    if [[ "$conflict_http" == "200" ]]; then
+      echo "  FAILED: '$canonical_alias' is already a standalone data stream and cannot also be an alias." >&2
+      echo "  Use a clean deployment or continue with INGEST_ENGINE=agent/logstash." >&2
+      rm -f "$alias_tmp"
+      exit 1
+    fi
+  else
+    echo "  FAILED (HTTP $alias_http): Could not inspect data stream aliases." >&2
+    cat "$alias_tmp" >&2
+    rm -f "$alias_tmp"
+    exit 1
+  fi
+  rm -f "$alias_tmp"
+
+  run_curl "Creating OpenSky integration compatibility pipeline" \
+    -X PUT "$BASE/_ingest/pipeline/demo-aircraft-adsb.opensky-compat" \
+    -H "Content-Type: application/json" \
+    -d @elasticsearch/pipelines/opensky-integration-compat-pipeline.json
+
+  local component_tmp component_http component_payload
+  component_tmp=$(mktemp)
+  component_http=$(curl -s -w '%{http_code}' -o "$component_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/_component_template/$custom_component")
+  component_payload=$(mktemp)
+  if [[ "$component_http" == "200" ]]; then
+    jq --slurpfile compat elasticsearch/indices/opensky-integration-compat-component-template.json \
+      '.component_templates[0].component_template * $compat[0]' \
+      "$component_tmp" > "$component_payload"
+  elif [[ "$component_http" == "404" ]]; then
+    cp elasticsearch/indices/opensky-integration-compat-component-template.json "$component_payload"
+  else
+    echo "  FAILED (HTTP $component_http): Could not inspect $custom_component." >&2
+    cat "$component_tmp" >&2
+    rm -f "$component_tmp" "$component_payload"
+    exit 1
+  fi
+  rm -f "$component_tmp"
+
+  run_curl "Configuring the OpenSky integration custom component" \
+    -X PUT "$BASE/_component_template/$custom_component" \
+    -H "Content-Type: application/json" \
+    -d "@$component_payload"
+  rm -f "$component_payload"
+
+  local mappings_tmp
+  mappings_tmp=$(mktemp)
+  jq '.template.mappings' \
+    elasticsearch/indices/opensky-integration-compat-component-template.json > "$mappings_tmp"
+  run_curl "Adding demo-compatible fields to the OpenSky data stream" \
+    -X PUT "$BASE/$data_stream/_mapping" \
+    -H "Content-Type: application/json" \
+    -d "@$mappings_tmp"
+  rm -f "$mappings_tmp"
+
+  local custom_pipeline_tmp custom_pipeline_http custom_pipeline_payload
+  custom_pipeline_tmp=$(mktemp)
+  custom_pipeline_payload=$(mktemp)
+  custom_pipeline_http=$(curl -s -w '%{http_code}' -o "$custom_pipeline_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/_ingest/pipeline/$custom_pipeline")
+  if [[ "$custom_pipeline_http" == "200" ]]; then
+    jq --arg name "$custom_pipeline" \
+      --arg condition "ctx.data_stream?.namespace == '$integration_namespace'" '
+      .[$name]
+      | .processors //= []
+      | .processors = [
+          .processors[]?
+          | select(.pipeline?.name != "demo-aircraft-adsb.opensky-compat")
+        ] + [{
+          pipeline: {
+            name: "demo-aircraft-adsb.opensky-compat",
+            tag: "adsb_demo_compatibility",
+            if: $condition
+          }
+        }]
+    ' "$custom_pipeline_tmp" > "$custom_pipeline_payload"
+  elif [[ "$custom_pipeline_http" == "404" ]]; then
+    jq -n --arg condition "ctx.data_stream?.namespace == '$integration_namespace'" '{
+      description: "OpenSky integration custom processing for ADS-B demo compatibility.",
+      processors: [{
+        pipeline: {
+          name: "demo-aircraft-adsb.opensky-compat",
+          tag: "adsb_demo_compatibility",
+          if: $condition
+        }
+      }]
+    }' > "$custom_pipeline_payload"
+  else
+    echo "  FAILED (HTTP $custom_pipeline_http): Could not inspect $custom_pipeline." >&2
+    cat "$custom_pipeline_tmp" >&2
+    rm -f "$custom_pipeline_tmp" "$custom_pipeline_payload"
+    exit 1
+  fi
+  rm -f "$custom_pipeline_tmp"
+
+  run_curl "Connecting compatibility processing to the OpenSky integration" \
+    -X PUT "$BASE/_ingest/pipeline/$custom_pipeline" \
+    -H "Content-Type: application/json" \
+    -d "@$custom_pipeline_payload"
+  rm -f "$custom_pipeline_payload"
+
+  if [[ "$alias_exists" == "true" ]]; then
+    step_label "Configuring the canonical ADS-B data stream alias"
+    echo "  Already targets $data_stream — skipping"
+  else
+    run_curl "Configuring the canonical ADS-B data stream alias" \
+      -X POST "$BASE/_data_stream/_modify" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n --arg stream "$data_stream" --arg alias "$canonical_alias" \
+        '{actions: [{add: {data_stream: $stream, alias: $alias}}]}')"
+  fi
+}
+
+prepare_local_ingest_target() {
+  local canonical_alias="demos-aircraft-adsb"
+  local alias_tmp alias_http alias_stream
+  alias_tmp=$(mktemp)
+  alias_http=$(curl -s -w '%{http_code}' -o "$alias_tmp" \
+    -H "Authorization: ApiKey $ES_API_KEY_ENCODED" \
+    "$BASE/_data_stream/_alias/$canonical_alias")
+
+  if [[ "$alias_http" == "404" ]]; then
+    rm -f "$alias_tmp"
+    return 0
+  fi
+  if [[ "$alias_http" != "200" ]]; then
+    echo "  FAILED (HTTP $alias_http): Could not inspect data stream aliases." >&2
+    cat "$alias_tmp" >&2
+    rm -f "$alias_tmp"
+    exit 1
+  fi
+
+  alias_stream=$(jq -r '
+    if (.data_streams | length) == 1 then .data_streams[0].name else empty end
+  ' "$alias_tmp")
+  rm -f "$alias_tmp"
+  if [[ "$alias_stream" != logs-opensky.state_vector-* ]]; then
+    echo "  FAILED: '$canonical_alias' is a data stream alias not managed by OpenSky compatibility mode." >&2
+    echo "  Remove or rename it before enabling local Agent/Logstash ingest." >&2
+    exit 1
+  fi
+
+  run_curl "Restoring the canonical ADS-B target for local ingest" \
+    -X POST "$BASE/_data_stream/_modify" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg stream "$alias_stream" --arg alias "$canonical_alias" \
+      '{actions: [{remove: {data_stream: $stream, alias: $alias}}]}')"
+}
+
 # ---------------------------------------------------------------------------
 # Group: pipelines
 # ---------------------------------------------------------------------------
@@ -822,6 +1060,12 @@ setup_pipelines() {
     fi
   fi
   rm -f "$historical_tmp"
+
+  if [[ "${INGEST_ENGINE:-agent}" == "opensky_integration" ]]; then
+    setup_opensky_integration_compat
+  else
+    prepare_local_ingest_target
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1803,6 +2047,7 @@ setup_demouser() {
         {
           names: [
             "demos-aircraft-adsb*",
+            "logs-opensky.state_vector-*",
             "adsb*",
             "geo.shapes-world.countries-50m",
             "traces-agent_builder.otel-*"
@@ -1849,7 +2094,7 @@ setup_demouser() {
       cluster: ["monitor"],
       indices: [
         {
-          names: ["demos-aircraft-adsb*", "adsb*", "geo.shapes-world.countries-50m"],
+          names: ["demos-aircraft-adsb*", "logs-opensky.state_vector-*", "adsb*", "geo.shapes-world.countries-50m"],
           privileges: ["read", "view_index_metadata", "monitor"]
         },
         {

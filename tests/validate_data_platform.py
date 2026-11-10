@@ -57,6 +57,79 @@ def validate_pipeline() -> None:
             "append",
             "set",
         }
+    removed_fields = {
+        field
+        for processor in pipeline["processors"]
+        if "remove" in processor
+        for field in processor["remove"].get("field", [])
+    }
+    assert "data_stream" not in removed_fields
+
+    compat = load_json(
+        ROOT / "elasticsearch/pipelines/opensky-integration-compat-pipeline.json"
+    )
+    copied_fields = {
+        (processor["set"].get("copy_from"), processor["set"]["field"])
+        for processor in compat["processors"]
+        if "set" in processor and "copy_from" in processor["set"]
+    }
+    expected_copies = {
+        ("host.id", "icao24"),
+        ("host.geo.location", "location"),
+        ("@timestamp", "time_position"),
+        ("event.created", "last_contact"),
+    }
+    for field in (
+        "callsign",
+        "origin_country",
+        "latitude",
+        "longitude",
+        "baro_altitude",
+        "geo_altitude",
+        "on_ground",
+        "velocity",
+        "true_track",
+        "vertical_rate",
+        "sensors",
+        "squawk",
+        "spi",
+        "position_source",
+        "category",
+    ):
+        expected_copies.add((f"opensky.state_vector.{field}", field))
+    assert expected_copies <= copied_fields
+    time_position = next(
+        processor["set"]
+        for processor in compat["processors"]
+        if processor.get("set", {}).get("field") == "time_position"
+    )
+    assert time_position["copy_from"] == "@timestamp"
+    assert time_position["if"] == "ctx.event?.created != null"
+    nested_pipeline = next(
+        processor["pipeline"]
+        for processor in compat["processors"]
+        if "pipeline" in processor
+    )
+    assert nested_pipeline["name"] == (
+        "demo-aircraft-adsb.opensky"
+    )
+
+    component = load_json(
+        ROOT
+        / "elasticsearch/indices/opensky-integration-compat-component-template.json"
+    )
+    assert component["_meta"]["adsb_demo_compatibility"] is True
+    compat_fields = component["template"]["mappings"]["properties"]
+    for field in (
+        "icao24",
+        "callsign",
+        "origin_country",
+        "location",
+        "geo",
+        "airport",
+        "ingest_quadrant",
+    ):
+        assert field in compat_fields
 
 
 def validate_logstash() -> None:
@@ -150,6 +223,28 @@ def validate_workflow_runtime_guards() -> None:
     assert 'case: "${{ variables.case }}"' in create_case
 
 
+def validate_opensky_integration_mode() -> None:
+    setup = (ROOT / "setup.sh").read_text()
+    assert "logs-opensky.state_vector@custom" in setup
+    assert "demo-aircraft-adsb.opensky-compat" in setup
+    assert '"$BASE/_data_stream/_modify"' in setup
+    assert 'INGEST_ENGINE:-agent}" == "opensky_integration"' in setup
+    assert (
+        '--arg condition "ctx.data_stream?.namespace == '
+        '\'$integration_namespace\'"'
+    ) in setup
+    assert setup.index("Adding demo-compatible fields") < setup.index(
+        "Connecting compatibility processing"
+    )
+    assert "prepare_local_ingest_target" in setup
+    assert "{remove: {data_stream: $stream, alias: $alias}}" in setup
+
+    env_example = (ROOT / ".env.example").read_text()
+    assert "OPENSKY_INTEGRATION_DATA_STREAM=logs-opensky.state_vector-default" in (
+        env_example
+    )
+
+
 def main() -> None:
     for path in (ROOT / "elasticsearch/indices").glob("*.json"):
         load_json(path)
@@ -161,6 +256,7 @@ def main() -> None:
     validate_agent_errors()
     validate_dashboard_as_code()
     validate_workflow_runtime_guards()
+    validate_opensky_integration_mode()
     print("Data-platform configuration is valid")
 
 

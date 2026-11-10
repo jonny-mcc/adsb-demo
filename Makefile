@@ -1,6 +1,7 @@
 FORCE_FLAG := $(if $(FORCE),--force,)
 
-# Ingest engine: agent (default) or logstash. Command-line wins, then .env, then agent.
+# Ingest engine: agent (default), logstash, or opensky_integration.
+# Command-line wins, then .env, then agent.
 ifndef INGEST_ENGINE
   INGEST_ENGINE := $(shell grep -E '^INGEST_ENGINE=' .env 2>/dev/null | tail -1 | cut -d= -f2)
 endif
@@ -74,32 +75,56 @@ redeploy:           ## Re-deploy all resources (force overwrite)
 ##@ Ingest
 # ---------------------------------------------------------------------------
 
-up:                 ## Start ingest (Elastic Agent by default; INGEST_ENGINE=logstash for Logstash)
-	docker compose up -d
+up:                 ## Start local ingest, or confirm Fleet-managed OpenSky integration mode
+	@if [ "$(INGEST_ENGINE)" = "opensky_integration" ]; then \
+	  echo "OpenSky integration ingest is managed by Fleet; no local container is required."; \
+	else \
+	  docker compose up -d; \
+	fi
 
 down:               ## Stop ingest (both agent and logstash profiles)
 	docker compose --profile agent --profile logstash down
+	@if [ "$(INGEST_ENGINE)" = "opensky_integration" ]; then \
+	  echo "Also disable or remove the OpenSky integration from its Fleet policy to stop Fleet ingest."; \
+	fi
 
 logs:               ## Tail ingest logs
-	docker compose logs -f
+	@if [ "$(INGEST_ENGINE)" = "opensky_integration" ]; then \
+	  echo "View the OpenSky integration status and agent logs in Fleet."; \
+	else \
+	  docker compose logs -f; \
+	fi
 
 restart:            ## Restart running ingest containers after config changes
-	docker compose restart
+	@if [ "$(INGEST_ENGINE)" = "opensky_integration" ]; then \
+	  echo "Restart or redeploy the OpenSky integration from Fleet."; \
+	else \
+	  docker compose restart; \
+	fi
 
 status:             ## Show ingest status
 	@echo "INGEST_ENGINE=$(INGEST_ENGINE) COMPOSE_PROFILES=$(COMPOSE_PROFILES)"
-	@docker compose --profile agent --profile logstash ps
-	@if docker compose --profile agent ps --status running --services 2>/dev/null | grep -qx elastic-agent; then \
+	@if [ "$(INGEST_ENGINE)" = "opensky_integration" ]; then \
+	  echo "Ingest is managed by the Fleet OpenSky integration."; \
+	else \
+	  docker compose --profile agent --profile logstash ps; \
+	fi
+	@if [ "$(INGEST_ENGINE)" != "opensky_integration" ] && \
+	  docker compose --profile agent ps --status running --services 2>/dev/null | grep -qx elastic-agent; then \
 	  echo "--- Elastic Agent ---"; \
 	  docker compose exec -T elastic-agent elastic-agent status || true; \
 	fi
-	@if docker compose --profile logstash ps --status running --services 2>/dev/null | grep -qx logstash; then \
+	@if [ "$(INGEST_ENGINE)" != "opensky_integration" ] && \
+	  docker compose --profile logstash ps --status running --services 2>/dev/null | grep -qx logstash; then \
 	  echo "--- Logstash pipelines ---"; \
 	  docker compose exec -T logstash curl -s localhost:9600/_node/pipelines?pretty || true; \
 	fi
 
 clean:              ## Stop ingest and remove volumes (both profiles)
 	docker compose --profile agent --profile logstash down -v
+	@if [ "$(INGEST_ENGINE)" = "opensky_integration" ]; then \
+	  echo "Fleet-managed OpenSky integration state is not removed."; \
+	fi
 
 # ---------------------------------------------------------------------------
 ##@ Diagnostics

@@ -34,6 +34,27 @@ jq -e '
   and (.index_templates[0].index_template.template.settings.index.lifecycle | not)
 ' <<< "$template" >/dev/null
 
+if [[ "${INGEST_ENGINE:-agent}" == "opensky_integration" ]]; then
+  opensky_stream="${OPENSKY_INTEGRATION_DATA_STREAM:-logs-opensky.state_vector-default}"
+  opensky_namespace="${opensky_stream#logs-opensky.state_vector-}"
+  alias_definition=$(es_curl "$BASE/_data_stream/_alias/demos-aircraft-adsb")
+  jq -e --arg stream "$opensky_stream" '
+    .data_streams | length == 1 and .[0].name == $stream
+  ' <<< "$alias_definition" >/dev/null
+
+  es_curl "$BASE/_ingest/pipeline/demo-aircraft-adsb.opensky-compat" >/dev/null
+  es_curl "$BASE/_component_template/logs-opensky.state_vector@custom" >/dev/null
+  custom_pipeline=$(es_curl "$BASE/_ingest/pipeline/logs-opensky.state_vector@custom")
+  jq -e --arg condition \
+    "ctx.data_stream?.namespace == '$opensky_namespace'" '
+    .["logs-opensky.state_vector@custom"].processors[]
+    | select(
+        .pipeline.name == "demo-aircraft-adsb.opensky-compat"
+        and .pipeline.if == $condition
+      )
+  ' <<< "$custom_pipeline" >/dev/null
+fi
+
 workflow_ids=(
   adsb-aggregate-stats
   adsb-aircraft-history
