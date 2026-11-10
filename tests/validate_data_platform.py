@@ -228,7 +228,8 @@ def validate_opensky_integration_mode() -> None:
     setup = (ROOT / "setup.sh").read_text()
     assert "logs-opensky.state_vector@custom" in setup
     assert "demo-aircraft-adsb.opensky-compat" in setup
-    assert '"$BASE/_data_stream/_modify"' in setup
+    assert '"$BASE/_aliases"' in setup
+    assert "_data_stream/_modify" not in setup
     assert '"$BASE/_alias/$canonical_alias"' in setup
     assert "_data_stream/_alias" not in setup
     assert 'INGEST_ENGINE:-agent}" == "opensky_integration"' in setup
@@ -240,7 +241,10 @@ def validate_opensky_integration_mode() -> None:
         "Connecting compatibility processing"
     )
     assert "prepare_local_ingest_target" in setup
-    assert "{remove: {data_stream: $stream, alias: $alias}}" in setup
+    assert "{remove: {index: $stream, alias: $alias}}" in setup
+    assert setup.count(
+        "del(.created_date_millis, .modified_date_millis)"
+    ) == 2
     assert (
         '{"name": "adsb-automation-session", "owner": true}'
         in setup

@@ -868,7 +868,8 @@ setup_opensky_integration_compat() {
   component_payload=$(mktemp)
   if [[ "$component_http" == "200" ]]; then
     jq --slurpfile compat elasticsearch/indices/opensky-integration-compat-component-template.json \
-      '.component_templates[0].component_template * $compat[0]' \
+      '(.component_templates[0].component_template
+        | del(.created_date_millis, .modified_date_millis)) * $compat[0]' \
       "$component_tmp" > "$component_payload"
   elif [[ "$component_http" == "404" ]]; then
     cp elasticsearch/indices/opensky-integration-compat-component-template.json "$component_payload"
@@ -906,6 +907,7 @@ setup_opensky_integration_compat() {
     jq --arg name "$custom_pipeline" \
       --arg condition "ctx.data_stream?.namespace == '$integration_namespace'" '
       .[$name]
+      | del(.created_date_millis, .modified_date_millis)
       | .processors //= []
       | .processors = [
           .processors[]?
@@ -948,10 +950,10 @@ setup_opensky_integration_compat() {
     echo "  Already targets $data_stream — skipping"
   else
     run_curl "Configuring the canonical ADS-B data stream alias" \
-      -X POST "$BASE/_data_stream/_modify" \
+      -X POST "$BASE/_aliases" \
       -H "Content-Type: application/json" \
       -d "$(jq -n --arg stream "$data_stream" --arg alias "$canonical_alias" \
-        '{actions: [{add: {data_stream: $stream, alias: $alias}}]}')"
+        '{actions: [{add: {index: $stream, alias: $alias}}]}')"
   fi
 }
 
@@ -990,10 +992,10 @@ prepare_local_ingest_target() {
   fi
 
   run_curl "Restoring the canonical ADS-B target for local ingest" \
-    -X POST "$BASE/_data_stream/_modify" \
+    -X POST "$BASE/_aliases" \
     -H "Content-Type: application/json" \
     -d "$(jq -n --arg stream "$alias_stream" --arg alias "$canonical_alias" \
-      '{actions: [{remove: {data_stream: $stream, alias: $alias}}]}')"
+      '{actions: [{remove: {index: $stream, alias: $alias}}]}')"
 }
 
 # ---------------------------------------------------------------------------
